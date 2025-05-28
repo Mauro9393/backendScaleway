@@ -10,28 +10,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout codice
-        uses: actions/checkout@v3
+    name: Checkout codice
+    uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+    name: Set up Docker Buildx
+    uses: docker/setup-buildx-action@v2
 
-      - name: Login a Scaleway Container Registry
-        run: |
-          echo "${{ secrets.SCALEWAY_SECRET_KEY }}" \
-            | docker login rg.fr-par.scw.cloud \
-                -u "${{ secrets.SCALEWAY_ACCESS_KEY }}" \
-                --password-stdin
+    name: Login a Scaleway Registry
+    run: |
+      echo "${{ secrets.SCALEWAY_SECRET_KEY }}" \
+        | docker login rg.fr-par.scw.cloud -u "${{ secrets.SCALEWAY_ACCESS_KEY }}" --password-stdin
 
-      - name: Build & Push Docker image
-        run: |
-          IMAGE="rg.fr-par.scw.cloud/${{ secrets.SCALEWAY_REGISTRY_NAMESPACE }}/chatbot-backend:latest"
-          docker build -t $IMAGE .
-          docker push $IMAGE
+    name: Build & Push Docker image
+    id: build_and_push
+    run: |
+      IMAGE="rg.fr-par.scw.cloud/${{ secrets.SCALEWAY_REGISTRY_NAMESPACE }}/chatbot-backend:latest"
+      echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+      docker build --platform linux/amd64 -t $IMAGE .
+      docker push $IMAGE
 
-      - name: Redeploy su Scaleway Serverless Container
-        uses: httptoolkit/deploy-scaleway-serverless-container-action@v1
-        with:
-          container_id:      ${{ secrets.SCALEWAY_CONTAINER_ID }}
-          secret_key:        ${{ secrets.SCALEWAY_SECRET_KEY }}
-          registry_image_url: $IMAGE
+    name: Redeploy su Scaleway Serverless Container
+    uses: httptoolkit/deploy-scaleway-serverless-container-action@v1
+    with:
+      container_id:      ${{ secrets.SCALEWAY_CONTAINER_ID }}
+      secret_key:        ${{ secrets.SCALEWAY_SECRET_KEY }}
+      registry_image_url: ${{ env.IMAGE }}

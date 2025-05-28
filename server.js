@@ -51,7 +51,10 @@ app.use(express.json());
 // pool DEVE stare prima di qualsiasi route che lo usa
 const pool = new Pool({
     connectionString: process.env.PG_CONNECTION,
-    ssl: { rejectUnauthorized: false }
+    ssl: {
+        ca: fs.readFileSync("C:/Users/MauroDiCarlo/rdb-blearn-db.pem").toString(),
+        rejectUnauthorized: true
+    }
 });
 
 // SSE helper for OpenAI Threads

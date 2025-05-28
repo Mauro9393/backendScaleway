@@ -37,3 +37,6 @@ jobs:
           container_id:      ${{ secrets.SCALEWAY_CONTAINER_ID }}
           secret_key:        ${{ secrets.SCALEWAY_SECRET_KEY }}
           registry_image_url: ${{ env.IMAGE }}
+          timeout_seconds:     300
+
+           

@@ -15,7 +15,7 @@ const { Pool } = require('pg');
 const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
 // Write Google service account key to disk and set env var
 const saKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;

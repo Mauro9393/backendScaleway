@@ -342,11 +342,11 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
         else if (service === "userList") {
-            const { clientName, userID, userName, userScore, historique, rapport } = req.body;
+            const { chatbotID, userID, userName, userScore, historique, rapport } = req.body;
             try {
                 const result = await pool.query(
-                    "INSERT INTO userlist (client_name, user_id, name, score, historique, rapport) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-                    [clientName, userID, userName, userScore, historique, rapport]
+                    "INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+                    [chatbotID, userID, userName, userScore, historique, rapport]
                 );
                 return res
                     .status(201)

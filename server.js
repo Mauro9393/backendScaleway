@@ -50,11 +50,11 @@ app.use(express.json());
 
 // pool DEVE stare prima di qualsiasi route che lo usa
 const pool = new Pool({
-  connectionString: process.env.PG_CONNECTION,
-  ssl: {
-    rejectUnauthorized: true,
-    ca: process.env.PG_SSL_CA
-  }
+    connectionString: process.env.PG_CONNECTION,
+    ssl: {
+        rejectUnauthorized: true,
+        ca: process.env.PG_SSL_CA
+    }
 });
 
 // SSE helper for OpenAI Threads
@@ -342,11 +342,11 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
         else if (service === "userList") {
-            const { chatbotID, userID, userName, userScore, historique, rapport } = req.body;
+            const { chatbotID, userID, userName, userScore, historique, rapport, usergroup } = req.body;
             try {
                 const result = await pool.query(
-                    "INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-                    [chatbotID, userID, userName, userScore, historique, rapport]
+                    "INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+                    [chatbotID, userID, userName, userScore, historique, rapport, usergroup]
                 );
                 return res
                     .status(201)
@@ -356,7 +356,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     .json({ message: "Utente inserito!", data: result.rows[0] });
             } catch (err) {
                 console.error("❌ Errore inserimento userList:", err);
-                // manda il messaggio d’errore al client per debug
                 res
                     .status(500)
                     .header("Access-Control-Allow-Origin", "*")

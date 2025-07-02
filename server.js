@@ -364,6 +364,41 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     .json({ error: err.message });
             }
         }
+        else if (service === "updateUserGroup") {
+            const { userID, usergroup } = req.body;
+            try {
+                console.log("=== AGGIORNAMENTO GRUPPO UTENTE ===");
+                console.log("UserID:", userID);
+                console.log("Nuovo gruppo:", usergroup);
+
+                const result = await pool.query(
+                    "UPDATE userlist SET usergroup = $1 WHERE user_email = $2",
+                    [usergroup, userID]
+                );
+
+                console.log("Record aggiornati:", result.rowCount);
+
+                return res
+                    .status(200)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .json({
+                        message: "Record aggiornati!",
+                        count: result.rowCount,
+                        userID: userID,
+                        usergroup: usergroup
+                    });
+            } catch (err) {
+                console.error("❌ Errore aggiornamento gruppo:", err);
+                res
+                    .status(500)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .json({ error: err.message });
+            }
+        }
         // ElevenLabs TTS
         else if (service === "elevenlabs") {
             const apiKey = process.env.ELEVENLAB_API_KEY;

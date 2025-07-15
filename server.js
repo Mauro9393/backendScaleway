@@ -342,12 +342,27 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
         else if (service === "userList") {
-            const { chatbotID, userID, userName, userScore, historique, rapport, usergroup } = req.body;
+            // aggiungi timeSession dal body (stringa 'HH:MM:SS')
+            const { chatbotID, userID, userName, userScore,
+                historique, rapport, usergroup, timeSession } = req.body;
+
             try {
                 const result = await pool.query(
-                    "INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
-                    [chatbotID, userID, userName, userScore, historique, rapport, usergroup]
+                    `INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup, timesession)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval)
+                    RETURNING *`,
+                    [
+                        chatbotID,
+                        userID,
+                        userName,
+                        userScore,
+                        historique,
+                        rapport,
+                        usergroup,
+                        timeSession || 'N/A'   // fallback se non arriva nulla
+                    ]
                 );
+
                 return res
                     .status(201)
                     .header("Access-Control-Allow-Origin", "*")
@@ -364,6 +379,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     .json({ error: err.message });
             }
         }
+
         else if (service === "updateUserGroup") {
             const { userID, usergroup } = req.body;
             try {

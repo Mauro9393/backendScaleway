@@ -323,12 +323,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             // Mappa lingua -> voce Azure
             const voiceMap = {
-                "français": "fr-FR-DeniseNeural",
+                "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
                 "anglais": "en-US-JennyNeural"
             };
             const lang = (selectedLanguage || "").trim().toLowerCase();
-            const voice = voiceMap[lang] || "fr-FR-DeniseNeural"; // default francese
+            const voice = voiceMap[lang] || "fr-FR-RemyMultilingualNeural"; // default francese
 
             const ssml = `
         <speak version='1.0' xml:lang='${voice.substring(0, 5)}'>

@@ -72,6 +72,15 @@ async function streamAssistant(assistantId, messages, userId, res) {
     res.end();
 }
 
+function escapeXml(unsafe) {
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+}
+
 // Whisper transcription endpoint
 app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     console.log("🔹 /api/transcribe, req.file:", req.file?.originalname, req.file?.size);
@@ -297,6 +306,58 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             } catch (err) {
                 console.error("OpenAI TTS error:", err.response?.data || err.message);
                 return res.status(err.response?.status || 500).json({ error: "OpenAI TTS failed", details: err.message });
+            }
+        }
+
+        else if (service === "azureTTS-Scaleway") {
+            const { text, selectedLanguage } = req.body;
+            if (!text) return res.status(400).json({ error: "Text is required" });
+
+            const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
+            const region = process.env.AZURE_REGION_AI_SERVICES;
+            const endpoint = process.env.AZURE_ENDPOINT_AI_SERVICES ||
+                `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
+
+            if (!apiKey || !region) {
+                return res.status(500).json({ error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)" });
+            }
+
+            // Mappa lingua -> voce Azure
+            const voiceMap = {
+                "français": "fr-FR-DeniseNeural",
+                "espagnol": "es-ES-ElviraNeural",
+                "anglais": "en-US-JennyNeural"
+            };
+            const lang = (selectedLanguage || "").trim().toLowerCase();
+            const voice = voiceMap[lang] || "fr-FR-DeniseNeural"; // default francese
+
+            const ssml = `
+        <speak version='1.0' xml:lang='${voice.substring(0, 5)}'>
+            <voice name='${voice}'>${escapeXml(text)}</voice>
+        </speak>`.trim();
+
+            try {
+                const responseTTS = await axios.post(
+                    endpoint,
+                    ssml,
+                    {
+                        headers: {
+                            "Ocp-Apim-Subscription-Key": apiKey,
+                            "Content-Type": "application/ssml+xml",
+                            // scegli il formato che vuoi. mp3 è comodo per Storyline
+                            "X-Microsoft-OutputFormat": "audio-16khz-128kbitrate-mono-mp3"
+                        },
+                        responseType: "arraybuffer",
+                        timeout: API_TIMEOUT
+                    }
+                );
+
+                res.setHeader("Content-Type", "audio/mpeg");
+                return res.send(responseTTS.data);
+            } catch (err) {
+                console.error("Azure Speech TTS error:", err.response?.data || err.message);
+                return res.status(err.response?.status || 500)
+                    .json({ error: "Azure Speech TTS failed", details: err.message });
             }
         }
 

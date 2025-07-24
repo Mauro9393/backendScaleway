@@ -81,6 +81,34 @@ function escapeXml(unsafe) {
         .replace(/'/g, "&apos;");
 }
 
+function buildSSML({ text, voice, style, styleDegree, rate, pitch, volume }) {
+    const ns = `xmlns:mstts="https://www.w3.org/2001/mstts"`;
+    const locale = voice.substring(0, 5); // es. fr-FR
+
+    const prosodyAttrs = [
+        rate ? `rate="${rate}"` : null, // "+12%" | "1.2"
+        pitch ? `pitch="${pitch}"` : null, // "+2st" | "-3st"
+        volume ? `volume="${volume}"` : null  // "+2dB" | "loud"
+    ].filter(Boolean).join(" ");
+
+    const openProsody = prosodyAttrs ? `<prosody ${prosodyAttrs}>` : "";
+    const closeProsody = prosodyAttrs ? `</prosody>` : "";
+
+    const expressOpen = style ? `<mstts:express-as style="${style}"${styleDegree ? ` styledegree="${styleDegree}"` : ""}>` : "";
+    const expressClose = style ? `</mstts:express-as>` : "";
+
+    return `
+<speak version="1.0" ${ns} xml:lang="${locale}">
+  <voice name="${voice}">
+    ${expressOpen}
+      ${openProsody}
+        ${escapeXml(text)}
+      ${closeProsody}
+    ${expressClose}
+  </voice>
+</speak>`.trim();
+}
+
 // Whisper transcription endpoint
 app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     console.log("🔹 /api/transcribe, req.file:", req.file?.originalname, req.file?.size);
@@ -308,14 +336,14 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 return res.status(err.response?.status || 500).json({ error: "OpenAI TTS failed", details: err.message });
             }
         }
-
+        /*
         else if (service === "azureTTS-Scaleway") {
             const { text, selectedLanguage } = req.body;
             if (!text) return res.status(400).json({ error: "Text is required" });
 
             const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
             const region = process.env.AZURE_REGION_AI_SERVICES;
-            const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`; /* process.env.AZURE_ENDPOINT_AI_SERVICES || */
+            const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`; // process.env.AZURE_ENDPOINT_AI_SERVICES || 
 
             if (!apiKey || !region) {
                 return res.status(500).json({ error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)" });
@@ -357,6 +385,68 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 console.error("Azure Speech TTS error:", err.response?.data || err.message);
                 return res.status(err.response?.status || 500)
                     .json({ error: "Azure Speech TTS failed", details: err.message });
+            }
+        } */
+
+        else if (service === "azureTTS-Scaleway") {
+            const {
+                text,
+                selectedLanguage,   // per retro‑compatibilità (français / espagnol / anglais)
+                selectedVoice,      // es. "fr-FR-RemyMultilingualNeural"
+                style,              // es. "cheerful", "friendly", "empathetic" (se supportato dalla voce)
+                styleDegree,        // es. "1.4"
+                rate,               // es. "+12%"
+                pitch,              // es. "+2st"
+                volume              // es. "loud" o "+2dB"
+            } = req.body;
+
+            if (!text) return res.status(400).json({ error: "Text is required" });
+
+            const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
+            const region = process.env.AZURE_REGION_AI_SERVICES;
+            if (!apiKey || !region) {
+                return res.status(500).json({
+                    error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
+                });
+            }
+
+            // Endpoint REST corretto per Speech TTS
+            const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
+
+            // Fallback lingua -> voce (se non passi selectedVoice)
+            const voiceMap = {
+                "français": "fr-FR-RemyMultilingualNeural",
+                "espagnol": "es-ES-ElviraNeural",
+                "anglais": "en-US-JennyNeural"
+            };
+            const lang = (selectedLanguage || "").trim().toLowerCase();
+            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
+
+            // Costruiamo l’SSML con stile/prosodia se arrivano dal front-end
+            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume });
+
+            try {
+                const responseTTS = await axios.post(
+                    endpoint,
+                    ssml,
+                    {
+                        headers: {
+                            "Ocp-Apim-Subscription-Key": apiKey,
+                            "Content-Type": "application/ssml+xml",
+                            "X-Microsoft-OutputFormat": "audio-16khz-128kbitrate-mono-mp3"
+                        },
+                        responseType: "arraybuffer",
+                        timeout: API_TIMEOUT
+                    }
+                );
+
+                res.setHeader("Content-Type", "audio/mpeg");
+                return res.send(responseTTS.data);
+            } catch (err) {
+                const details = err.response?.data?.toString?.() || err.response?.data || err.message;
+                console.error("Azure Speech TTS error:", details);
+                return res.status(err.response?.status || 500)
+                    .json({ error: "Azure Speech TTS failed", details });
             }
         }
 

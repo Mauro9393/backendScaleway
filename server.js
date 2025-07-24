@@ -415,12 +415,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             // Fallback lingua -> voce (se non passi selectedVoice)
             const voiceMap = {
-                "français": "fr-FR-RemyMultilingualNeural",
+                "français": "fr-FR-HenriNeural",
                 "espagnol": "es-ES-ElviraNeural",
                 "anglais": "en-US-JennyNeural"
             };
             const lang = (selectedLanguage || "").trim().toLowerCase();
-            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
+            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-HenriNeural";
 
             // Costruiamo l’SSML con stile/prosodia se arrivano dal front-end
             const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume });

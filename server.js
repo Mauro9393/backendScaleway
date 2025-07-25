@@ -443,33 +443,33 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
                 res.setHeader("Content-Type", "audio/mpeg");
                 return res.send(responseTTS.data);
-            } catch (error) {
-                const status = error.response?.status || 500;
-
-                // prova a leggere body come stringa anche se è buffer
-                let body = error.response?.data;
-                if (Buffer.isBuffer(body)) {
-                    try { body = body.toString("utf8"); } catch { body = "<buffer>"; }
-                }
-
-                const headers = error.response?.headers || {};
+            } catch (err) {
+                const status = err.response?.status || 500;
+                const headers = err.response?.headers || {};
                 const requestId = headers["x-requestid"] || headers["x-ms-requestid"] || "";
 
-                console.error(`❌ API error on /api/${req.params.service}`,
-                    "\nstatus:", status,
-                    "\nrequestId:", requestId,
-                    "\nmessage:", error.message,
-                    "\nheaders:", headers,
-                    "\nbody:", body
-                );
+                let textErr = err.response?.data;
+                if (Buffer.isBuffer(textErr)) {
+                    try { textErr = textErr.toString("utf8"); } catch { textErr = "<buffer>"; }
+                } else if (typeof textErr === "object") {
+                    textErr = JSON.stringify(textErr);
+                }
+
+                console.error("Azure Speech TTS error:", {
+                    status,
+                    requestId,
+                    textErr,
+                    ssml
+                });
+
+                const DEBUG_TTS = process.env.DEBUG_TTS === "true";
 
                 return res.status(status).json({
-                    error: "API request error",
-                    service: req.params.service,
-                    status,
-                    message: error.message,
+                    error: "Azure Speech TTS failed",
+                    azureStatus: status,
                     requestId,
-                    details: typeof body === "string" ? body : (body ? JSON.stringify(body) : null)
+                    details: textErr || "no-body",
+                    ...(DEBUG_TTS ? { ssml } : {})
                 });
             }
 
@@ -626,8 +626,32 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             return res.status(400).json({ error: "Invalid service" });
         }
     } catch (error) {
-        console.error(`API error ${req.params.service}:`, error.response?.data || error.message);
-        res.status(500).json({ error: "API request error" });
+        const status = error?.response?.status || 500;
+        const headers = error?.response?.headers || {};
+        const requestId = headers["x-requestid"] || headers["x-ms-requestid"] || "";
+
+        let details = error?.response?.data;
+        if (Buffer.isBuffer(details)) {
+            try { details = details.toString("utf8"); } catch { details = "<buffer>"; }
+        } else if (typeof details === "object") {
+            details = JSON.stringify(details);
+        }
+
+        console.error(`❌ API error on /api/${req.params.service}`, {
+            status,
+            message: error.message,
+            requestId,
+            details,
+        });
+
+        return res.status(status).json({
+            error: "API request error",
+            service: req.params.service,
+            status,
+            message: error.message,
+            requestId,
+            details
+        });
     }
 });
 

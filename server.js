@@ -81,33 +81,11 @@ function escapeXml(unsafe) {
         .replace(/'/g, "&apos;");
 }
 
-function buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs = 0, trailingSilenceMs = 0 }) {
-    const ns = `xmlns:mstts="https://www.w3.org/2001/mstts"`;
-    const locale = voice.substring(0, 5); // es. fr-FR
-
-    const prosodyAttrs = [
-        rate ? `rate="${rate}"` : null, // "+12%" | "1.2"
-        pitch ? `pitch="${pitch}"` : null, // "+2st" | "-3st"
-        volume ? `volume="${volume}"` : null  // "+2dB" | "loud"
-    ].filter(Boolean).join(" ");
-
-    const openProsody = prosodyAttrs ? `<prosody ${prosodyAttrs}>` : "";
-    const closeProsody = prosodyAttrs ? `</prosody>` : "";
-
-    const expressOpen = style ? `<mstts:express-as style="${style}"${styleDegree ? ` styledegree="${styleDegree}"` : ""}>` : "";
-    const expressClose = style ? `</mstts:express-as>` : "";
-
-    return `
-<speak version="1.0" ${ns} xml:lang="${locale}">
-  <voice name="${voice}">
-    <mstts:silence type="Leading" value="${leadingSilenceMs}ms"/>
-    <mstts:silence type="Tailing" value="${trailingSilenceMs}ms"/>
-    ${expressOpen}
-      ${openProsody}
-        ${escapeXml(text)}
-      ${closeProsody}
-    ${expressClose}
-  </voice>
+function buildSSML({ text, voice }) {
+  const locale = (voice || "fr-FR-RemyMultilingualNeural").substring(0, 5);
+  return `
+<speak version="1.0" xml:lang="${locale}">
+  <voice name="${voice}">${escapeXml(text)}</voice>
 </speak>`.trim();
 }
 

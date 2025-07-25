@@ -134,6 +134,70 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     }
 });
 
+app.get("/api/azureTTS-Scaleway-stream", async (req, res) => {
+  try {
+    const {
+      text,
+      selectedLanguage,
+      selectedVoice,
+      style,
+      styleDegree,
+      rate,
+      pitch,
+      volume
+    } = req.query;
+
+    console.log("[azureTTS-Scaleway-stream] query:", req.query);
+
+    if (!text) {
+      return res.status(400).json({ error: "Text is required" });
+    }
+
+    const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
+    const region = process.env.AZURE_REGION_AI_SERVICES;
+    if (!apiKey || !region) {
+      return res.status(500).json({
+        error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
+      });
+    }
+
+    const voiceMap = {
+      "français": "fr-FR-HenriNeural",
+      "espagnol": "es-ES-ElviraNeural",
+      "anglais": "en-US-JennyNeural"
+    };
+    const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
+    const lang = (selectedLanguage || "").trim().toLowerCase();
+    const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-HenriNeural";
+
+    const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume });
+
+    const ttsResp = await axios.post(endpoint, ssml, {
+      headers: {
+        "Ocp-Apim-Subscription-Key": apiKey,
+        "Content-Type": "application/ssml+xml",
+        "X-Microsoft-OutputFormat": "audio-16khz-24kbitrate-mono-mp3"
+      },
+      responseType: "stream",
+      timeout: API_TIMEOUT
+    });
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Access-Control-Allow-Origin", "*"); // per sicurezza
+    ttsResp.data.pipe(res);
+  } catch (err) {
+    const details = err.response?.data?.toString?.() || err.response?.data || err.message;
+    console.error("Azure Speech TTS streaming error:", details);
+    if (!res.headersSent) {
+      res.status(err.response?.status || 500).json({
+        error: "Azure Speech TTS streaming failed",
+        details
+      });
+    }
+  }
+});
+
 // Main API router
 app.post("/api/:service", upload.none(), async (req, res) => {
     const { service } = req.params;

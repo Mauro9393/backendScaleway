@@ -417,15 +417,15 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             // Fallback lingua -> voce (se non passi selectedVoice)
             const voiceMap = {
-                "français": "fr-FR-HenriNeural",
+                "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
                 "anglais": "en-US-JennyNeural"
             };
             const lang = (selectedLanguage || "").trim().toLowerCase();
-            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-HenriNeural";
+            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 
             // Costruiamo l’SSML con stile/prosodia se arrivano dal front-end
-            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs: 0, trailingSilenceMs: 0});
+            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs: 0, trailingSilenceMs: 0 });
 
             try {
                 const responseTTS = await axios.post(
@@ -445,10 +445,29 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 res.setHeader("Content-Type", "audio/mpeg");
                 return res.send(responseTTS.data);
             } catch (err) {
-                const details = err.response?.data?.toString?.() || err.response?.data || err.message;
-                console.error("Azure Speech TTS error:", details);
-                return res.status(err.response?.status || 500)
-                    .json({ error: "Azure Speech TTS failed", details });
+                let status = err.response?.status || 500;
+                let raw = err.response?.data;
+
+                let textErr = "";
+                if (Buffer.isBuffer(raw)) {
+                    try { textErr = raw.toString("utf8"); } catch { }
+                } else if (typeof raw === "string") {
+                    textErr = raw;
+                } else if (raw) {
+                    textErr = JSON.stringify(raw);
+                }
+
+                console.error("Azure Speech TTS error:",
+                    status,
+                    "\n--- RAW ERR ---\n", textErr,
+                    "\n--- SSML SENT ---\n", ssml
+                );
+
+                return res.status(status).json({
+                    error: "Azure Speech TTS failed",
+                    azureStatus: status,
+                    details: textErr
+                });
             }
         }
 

@@ -435,7 +435,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                         headers: {
                             "Ocp-Apim-Subscription-Key": apiKey,
                             "Content-Type": "application/ssml+xml",
-                            "X-Microsoft-OutputFormat": "audio-16khz-32kbitrate-mono-mp3"
+                            "X-Microsoft-OutputFormat": "riff-16000hz-16bit-mono-pcm"
                         },
                         responseType: "arraybuffer",
                         timeout: API_TIMEOUT

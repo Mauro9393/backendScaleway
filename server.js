@@ -443,30 +443,36 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
                 res.setHeader("Content-Type", "audio/mpeg");
                 return res.send(responseTTS.data);
-            } catch (err) {
-                const status = err.response?.status || 500;
-                let raw = err.response?.data;
-                let textErr = "";
-                if (Buffer.isBuffer(raw)) {
-                    try { textErr = raw.toString("utf8"); } catch { }
-                } else if (typeof raw === "string") {
-                    textErr = raw;
-                } else if (raw) {
-                    textErr = JSON.stringify(raw);
+            } catch (error) {
+                const status = error.response?.status || 500;
+
+                // prova a leggere body come stringa anche se è buffer
+                let body = error.response?.data;
+                if (Buffer.isBuffer(body)) {
+                    try { body = body.toString("utf8"); } catch { body = "<buffer>"; }
                 }
 
-                console.error("Azure Speech TTS error:",
-                    status,
-                    "\n--- RAW ERR ---\n", textErr,
-                    "\n--- SSML SENT ---\n", ssml
+                const headers = error.response?.headers || {};
+                const requestId = headers["x-requestid"] || headers["x-ms-requestid"] || "";
+
+                console.error(`❌ API error on /api/${req.params.service}`,
+                    "\nstatus:", status,
+                    "\nrequestId:", requestId,
+                    "\nmessage:", error.message,
+                    "\nheaders:", headers,
+                    "\nbody:", body
                 );
 
                 return res.status(status).json({
-                    error: "Azure Speech TTS failed",
-                    azureStatus: status,
-                    details: textErr
+                    error: "API request error",
+                    service: req.params.service,
+                    status,
+                    message: error.message,
+                    requestId,
+                    details: typeof body === "string" ? body : (body ? JSON.stringify(body) : null)
                 });
             }
+
         }
 
 

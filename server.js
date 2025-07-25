@@ -417,8 +417,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 
-            // *** SANITIZZA: non usare express-as se lo stile non è definito o è "default" ***
-            const safeStyle = style && style !== "default" ? style : null;
             const ssml = buildSSML({
                 text,
                 voice,

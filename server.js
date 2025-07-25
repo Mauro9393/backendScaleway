@@ -81,7 +81,7 @@ function escapeXml(unsafe) {
         .replace(/'/g, "&apos;");
 }
 
-function buildSSML({ text, voice, style, styleDegree, rate, pitch, volume }) {
+function buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs = 0, trailingSilenceMs = 0 }) {
     const ns = `xmlns:mstts="https://www.w3.org/2001/mstts"`;
     const locale = voice.substring(0, 5); // es. fr-FR
 
@@ -100,6 +100,8 @@ function buildSSML({ text, voice, style, styleDegree, rate, pitch, volume }) {
     return `
 <speak version="1.0" ${ns} xml:lang="${locale}">
   <voice name="${voice}">
+    <mstts:silence type="Leading" value="${leadingSilenceMs}ms"/>
+    <mstts:silence type="Tailing" value="${trailingSilenceMs}ms"/>
     ${expressOpen}
       ${openProsody}
         ${escapeXml(text)}
@@ -423,7 +425,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-HenriNeural";
 
             // Costruiamo l’SSML con stile/prosodia se arrivano dal front-end
-            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume });
+            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs: 0, trailingSilenceMs: 0});
 
             try {
                 const responseTTS = await axios.post(

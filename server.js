@@ -395,11 +395,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 text,
                 selectedLanguage,
                 selectedVoice,
-                style,
-                styleDegree,
-                rate,
-                pitch,
-                volume
             } = req.body;
 
             if (!text) return res.status(400).json({ error: "Text is required" });
@@ -427,11 +422,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const ssml = buildSSML({
                 text,
                 voice,
-                style: safeStyle,
-                styleDegree: safeStyle ? styleDegree : null,
-                rate,
-                pitch,
-                volume,
                 leadingSilenceMs: 0,
                 trailingSilenceMs: 0
             });

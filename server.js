@@ -393,13 +393,13 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "azureTTS-Scaleway") {
             const {
                 text,
-                selectedLanguage,   // per retro‑compatibilità (français / espagnol / anglais)
-                selectedVoice,      // es. "fr-FR-RemyMultilingualNeural"
-                style,              // es. "cheerful", "friendly", "empathetic" (se supportato dalla voce)
-                styleDegree,        // es. "1.4"
-                rate,               // es. "+12%"
-                pitch,              // es. "+2st"
-                volume              // es. "loud" o "+2dB"
+                selectedLanguage,
+                selectedVoice,
+                style,
+                styleDegree,
+                rate,
+                pitch,
+                volume
             } = req.body;
 
             if (!text) return res.status(400).json({ error: "Text is required" });
@@ -412,10 +412,8 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 });
             }
 
-            // Endpoint REST corretto per Speech TTS
             const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
 
-            // Fallback lingua -> voce (se non passi selectedVoice)
             const voiceMap = {
                 "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
@@ -424,8 +422,19 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 
-            // Costruiamo l’SSML con stile/prosodia se arrivano dal front-end
-            const ssml = buildSSML({ text, voice, style, styleDegree, rate, pitch, volume, leadingSilenceMs: 0, trailingSilenceMs: 0 });
+            // *** SANITIZZA: non usare express-as se lo stile non è definito o è "default" ***
+            const safeStyle = style && style !== "default" ? style : null;
+            const ssml = buildSSML({
+                text,
+                voice,
+                style: safeStyle,
+                styleDegree: safeStyle ? styleDegree : null,
+                rate,
+                pitch,
+                volume,
+                leadingSilenceMs: 0,
+                trailingSilenceMs: 0
+            });
 
             try {
                 const responseTTS = await axios.post(
@@ -434,7 +443,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     {
                         headers: {
                             "Ocp-Apim-Subscription-Key": apiKey,
-                            "Content-Type": "application/ssml+xml",
+                            "Content-Type": "application/ssml+xml; charset=utf-8",
                             "X-Microsoft-OutputFormat": "audio-16khz-24kbitrate-mono-mp3"
                         },
                         responseType: "arraybuffer",
@@ -445,9 +454,8 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 res.setHeader("Content-Type", "audio/mpeg");
                 return res.send(responseTTS.data);
             } catch (err) {
-                let status = err.response?.status || 500;
+                const status = err.response?.status || 500;
                 let raw = err.response?.data;
-
                 let textErr = "";
                 if (Buffer.isBuffer(raw)) {
                     try { textErr = raw.toString("utf8"); } catch { }

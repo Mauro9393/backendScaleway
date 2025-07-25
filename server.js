@@ -81,9 +81,15 @@ function escapeXml(unsafe) {
         .replace(/'/g, "&apos;");
 }
 
+function cleanText(str = "") {
+    return String(str)
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ")
+        .replace(/[\uD800-\uDFFF]/g, "")
+}
+
 function buildSSML({ text, voice }) {
-  const locale = (voice || "fr-FR-RemyMultilingualNeural").substring(0, 5);
-  return `
+    const locale = (voice || "fr-FR-RemyMultilingualNeural").substring(0, 5);
+    return `
 <speak version="1.0" xml:lang="${locale}">
   <voice name="${voice}">${escapeXml(text)}</voice>
 </speak>`.trim();
@@ -395,11 +401,11 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 
+            const cleaned = cleanText(text);
+
             const ssml = buildSSML({
-                text,
-                voice,
-                leadingSilenceMs: 0,
-                trailingSilenceMs: 0
+                text: cleaned,
+                voice
             });
 
             try {

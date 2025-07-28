@@ -460,7 +460,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
             const region = process.env.AZURE_REGION_AI_SERVICES;
             if (!apiKey || !region) {
-                return res.status(500).json({
+                return res.status(500).json({ 
                     error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
                 });
             }

@@ -11,6 +11,8 @@ const path = require("path");
 const { VertexAI } = require("@google-cloud/vertexai");
 const { Pool } = require('pg');
 
+const sdk = require("microsoft-cognitiveservices-speech-sdk");
+
 // Multer setup for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -451,8 +453,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
 
         else if (service === "azureTTS-websocked-Scaleway") {
-            const sdk = require("microsoft-cognitiveservices-speech-sdk");
-            
             const { text, selectedLanguage, selectedVoice } = req.body;
 
             if (!text) return res.status(400).json({ error: "Text is required" });

@@ -454,18 +454,21 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;
+            const qFormat = (req.query.format || "").toLowerCase(); // ?format=webm / mp3
+            const wantedFormat = (qFormat === "mp3" || qFormat === "webm") ? qFormat : "webm";
 
-            if (!text) return res.status(400).json({ error: "Text is required" });
+            if (!text || !text.trim()) {
+                return res.status(400).json({ error: "Text is required" });
+            }
 
             const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
             const region = process.env.AZURE_REGION_AI_SERVICES;
             if (!apiKey || !region) {
-                return res.status(500).json({ 
+                return res.status(500).json({
                     error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
                 });
             }
 
-            // Voce di default come nel tuo blocco REST
             const voiceMap = {
                 "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
@@ -479,56 +482,93 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             try {
                 const speechConfig = sdk.SpeechConfig.fromSubscription(apiKey, region);
 
-                // ▶︎ Formato ottimale per MSE/WebM Opus (streaming client friendly)
-                speechConfig.speechSynthesisOutputFormat =
-                    sdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3; // "audio/webm; codecs=opus"
+                let contentType;
+                if (wantedFormat === "webm") {
+                    // Streaming ideale per MSE (bassa latenza)
+                    speechConfig.speechSynthesisOutputFormat =
+                        sdk.SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus;
+                    contentType = "audio/webm";
+                } else {
+                    // Streaming progressivo MP3 (no MSE; va bene come fallback)
+                    speechConfig.speechSynthesisOutputFormat =
+                        sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+                    contentType = "audio/mpeg";
+                }
 
-                // Header per streaming chunked
-                res.setHeader("Content-Type", "audio/mpeg");
-                res.setHeader("Transfer-Encoding", "chunked");
-                res.setHeader("Cache-Control", "no-store");
+                let started = false;
+                let totalBytes = 0;
 
-                // Crea un PushAudioOutputStream che scrive direttamente nella response
                 const pushStream = sdk.PushAudioOutputStream.create({
                     write: (data) => {
-                        // data è un ArrayBuffer
                         if (data && data.byteLength) {
-                            res.write(Buffer.from(data));
+                            if (!started) {
+                                // Invia gli header SOLO al primo chunk
+                                res.setHeader("Content-Type", contentType);
+                                res.setHeader("Transfer-Encoding", "chunked");
+                                res.setHeader("Cache-Control", "no-store");
+                                if (typeof res.flushHeaders === "function") res.flushHeaders();
+                                started = true;
+                            }
+                            totalBytes += data.byteLength;
+                            res.write(Buffer.from(data)); // scrivi chunk
                         }
                     },
                     close: () => {
-                        // chiusura dal lato SDK → chiudi la response
-                        res.end();
+                        // Se non abbiamo mai scritto un byte → errore esplicito (niente "blob vuoto")
+                        if (!started || totalBytes === 0) {
+                            if (!res.headersSent) {
+                                return res.status(502).json({ error: "No audio produced by Azure TTS" });
+                            }
+                            try { res.end(); } catch { }
+                            return;
+                        }
+                        // Fine regolare
+                        try { res.end(); } catch { }
                     }
                 });
 
                 const audioConfig = sdk.AudioConfig.fromStreamOutput(pushStream);
                 const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
 
-                // Se il client chiude la connessione, chiudiamo anche il synth
-                let aborted = false;
-                req.on("close", () => {
-                    aborted = true;
-                    try { synthesizer.close(); } catch { }
-                });
+                // watchdog: se non parte entro X secondi, chiudi e rispondi errore
+                const watchdog = setTimeout(() => {
+                    if (!started && !res.headersSent) {
+                        try { synthesizer.close(); } catch { }
+                        return res.status(504).json({ error: "Azure TTS timeout before first audio chunk" });
+                    }
+                }, 15000);
 
+                // Avvia sintesi
                 synthesizer.speakSsmlAsync(
-                    ssml,
-                    result => {
+                    (ssml),
+                    (result) => {
+                        clearTimeout(watchdog);
                         try { synthesizer.close(); } catch { }
-                        // Se non ha già chiuso lo stream, assicurati che la response finisca
-                        if (!aborted) { try { res.end(); } catch { } }
+                        // Se Azure riporta errore (anche dopo), ma non abbiamo mai scritto, torna JSON
+                        if (!started && (!result || result.reason !== sdk.ResultReason.SynthesizingAudioCompleted)) {
+                            const details = result && result.errorDetails ? result.errorDetails : "Unknown synthesis error";
+                            if (!res.headersSent) {
+                                return res.status(502).json({ error: "Azure TTS failed", details });
+                            }
+                        }
+                        // Se eravamo già partiti a streammare, la chiusura la gestisce pushStream.close()
                     },
-                    err => {
+                    (err) => {
+                        clearTimeout(watchdog);
                         try { synthesizer.close(); } catch { }
-                        // Se non abbiamo ancora scritto niente, possiamo rispondere con errore JSON
                         if (!res.headersSent) {
                             return res.status(500).json({ error: "Azure Speech TTS failed", details: String(err) });
                         }
-                        // altrimenti terminare lo stream
+                        // Se avevamo iniziato a streammare, chiudi la connessione
                         try { res.end(); } catch { }
                     }
                 );
+
+                // Se il client chiude la connessione, stoppa il synth
+                req.on("aborted", () => {
+                    try { synthesizer.close(); } catch { }
+                });
+
             } catch (e) {
                 return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
             }

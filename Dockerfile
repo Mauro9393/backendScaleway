@@ -1,16 +1,22 @@
-FROM node:18-alpine
+# Base glibc per Node 18
+FROM node:18-bullseye-slim
+
+# Librerie di sistema richieste dallo Speech SDK (ALSA, OpenSSL, CA)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libasound2 \
+    openssl \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Installa le dipendenze
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
-# Copia il resto del codice
 COPY . .
 
-# Esponi la porta
+ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-# Comando di avvio
 CMD ["node", "server.js"]

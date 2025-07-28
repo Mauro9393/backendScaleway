@@ -481,11 +481,10 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
                 // ▶︎ Formato ottimale per MSE/WebM Opus (streaming client friendly)
                 speechConfig.speechSynthesisOutputFormat =
-                    sdk.SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus; // "audio/webm; codecs=opus"
-                // (se vuoi MP3 vedi variante sotto)
+                    sdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3; // "audio/webm; codecs=opus"
 
                 // Header per streaming chunked
-                res.setHeader("Content-Type", "audio/webm");
+                res.setHeader("Content-Type", "audio/mpeg");
                 res.setHeader("Transfer-Encoding", "chunked");
                 res.setHeader("Cache-Control", "no-store");
 

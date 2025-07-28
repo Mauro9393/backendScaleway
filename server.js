@@ -11,7 +11,16 @@ const path = require("path");
 const { VertexAI } = require("@google-cloud/vertexai");
 const { Pool } = require('pg');
 
-const sdk = require("microsoft-cognitiveservices-speech-sdk");
+let speechSdk;
+let speechSdkLoadError;
+
+try {
+    speechSdk = require("microsoft-cognitiveservices-speech-sdk");
+    console.log("✅ Speech SDK caricato");
+} catch (e) {
+    speechSdkLoadError = e;
+    console.error("❌ Speech SDK NON disponibile:", e?.message || e);
+}
 
 // Multer setup for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
@@ -454,18 +463,24 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;
-
             if (!text) return res.status(400).json({ error: "Text is required" });
+
+            // 👉 se l'SDK non è disponibile, restituisci errore esplicito (ma il server resta su)
+            if (!speechSdk) {
+                return res.status(500).json({
+                    error: "Speech SDK non disponibile nel container",
+                    details: speechSdkLoadError?.message || "Librerie di sistema mancanti/incompatibili"
+                });
+            }
 
             const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
             const region = process.env.AZURE_REGION_AI_SERVICES;
             if (!apiKey || !region) {
-                return res.status(500).json({ 
+                return res.status(500).json({
                     error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
                 });
             }
 
-            // Voce di default come nel tuo blocco REST
             const voiceMap = {
                 "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
@@ -473,60 +488,46 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             };
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
-
             const ssml = buildSSML({ text, voice });
 
             try {
-                const speechConfig = sdk.SpeechConfig.fromSubscription(apiKey, region);
+                // 👇 prendi i costruttori dall’SDK caricato
+                const {
+                    SpeechConfig,
+                    SpeechSynthesisOutputFormat,
+                    PushAudioOutputStream,
+                    AudioConfig,
+                    SpeechSynthesizer
+                } = speechSdk;
 
-                // ▶︎ Formato ottimale per MSE/WebM Opus (streaming client friendly)
-                speechConfig.speechSynthesisOutputFormat =
-                    sdk.SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus; // "audio/webm; codecs=opus"
-                // (se vuoi MP3 vedi variante sotto)
+                const speechConfig = SpeechConfig.fromSubscription(apiKey, region);
+                speechConfig.speechSynthesisOutputFormat = SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus;
 
-                // Header per streaming chunked
                 res.setHeader("Content-Type", "audio/webm");
                 res.setHeader("Transfer-Encoding", "chunked");
                 res.setHeader("Cache-Control", "no-store");
 
-                // Crea un PushAudioOutputStream che scrive direttamente nella response
-                const pushStream = sdk.PushAudioOutputStream.create({
+                const pushStream = PushAudioOutputStream.create({
                     write: (data) => {
-                        // data è un ArrayBuffer
-                        if (data && data.byteLength) {
-                            res.write(Buffer.from(data));
-                        }
+                        if (data && data.byteLength) res.write(Buffer.from(data));
                     },
-                    close: () => {
-                        // chiusura dal lato SDK → chiudi la response
-                        res.end();
-                    }
+                    close: () => res.end()
                 });
 
-                const audioConfig = sdk.AudioConfig.fromStreamOutput(pushStream);
-                const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+                const audioConfig = AudioConfig.fromStreamOutput(pushStream);
+                const synthesizer = new SpeechSynthesizer(speechConfig, audioConfig);
 
-                // Se il client chiude la connessione, chiudiamo anche il synth
                 let aborted = false;
-                req.on("close", () => {
-                    aborted = true;
-                    try { synthesizer.close(); } catch { }
-                });
+                req.on("close", () => { aborted = true; try { synthesizer.close(); } catch { } });
 
                 synthesizer.speakSsmlAsync(
                     ssml,
-                    result => {
-                        try { synthesizer.close(); } catch { }
-                        // Se non ha già chiuso lo stream, assicurati che la response finisca
-                        if (!aborted) { try { res.end(); } catch { } }
-                    },
+                    () => { try { synthesizer.close(); } catch { }; if (!aborted) { try { res.end(); } catch { } } },
                     err => {
-                        try { synthesizer.close(); } catch { }
-                        // Se non abbiamo ancora scritto niente, possiamo rispondere con errore JSON
+                        try { synthesizer.close(); } catch { };
                         if (!res.headersSent) {
                             return res.status(500).json({ error: "Azure Speech TTS failed", details: String(err) });
                         }
-                        // altrimenti terminare lo stream
                         try { res.end(); } catch { }
                     }
                 );
@@ -534,7 +535,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
             }
         }
-
 
         // OpenAI Streaming TTS (SDK)
         else if (service === "streaming-openai-tts") {

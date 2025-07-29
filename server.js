@@ -828,7 +828,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
                 "anglais": "en-US-JennyNeural"
-            };
+            }; 
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 

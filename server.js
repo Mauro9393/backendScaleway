@@ -13,6 +13,226 @@ const { Pool } = require('pg');
 
 const sdk = require("microsoft-cognitiveservices-speech-sdk");
 
+/* ----------------------------- START --------------------------*/
+
+// ======== AZURE TTS POOL (riuso connessioni) ========
+const AZ_TTS_KEY = process.env.AZURE_TTS_KEY_AI_SERVICES;
+const AZ_TTS_REGION = process.env.AZURE_REGION_AI_SERVICES;
+
+// Dimensione massima pool per formato (aumenta se hai più concorrenza)
+const MAX_SYNTH_PER_FORMAT = 2;
+
+// Mappa: { webm: [worker, ...], mp3: [worker, ...] }
+const ttsPools = {
+    webm: [],
+    mp3: []
+};
+
+function createSynthesizerForFormat(format) {
+    if (!AZ_TTS_KEY || !AZ_TTS_REGION) {
+        throw new Error("Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)");
+    }
+    const speechConfig = sdk.SpeechConfig.fromSubscription(AZ_TTS_KEY, AZ_TTS_REGION);
+    if (format === "webm") {
+        speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus;
+    } else {
+        speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+    }
+
+    // Nessun AudioConfig: leggeremo i chunk dall'evento "synthesizing"
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
+
+    // Apri connessione in anticipo (warm)
+    try {
+        const conn = sdk.Connection.fromSpeechSynthesizer(synthesizer);
+        conn.openConnectionAsync(
+            () => { /* warm ok */ },
+            (err) => { console.warn("openConnectionAsync failed:", err?.message || err); }
+        );
+    } catch (e) {
+        console.warn("Connection warmup failed:", e?.message || e);
+    }
+
+    // Un "worker" incapsula un synthesizer riutilizzabile, con coda jobs
+    return {
+        synthesizer,
+        busy: false,
+        queue: [],
+    };
+}
+
+function retireAndReplaceWorker(worker, format) {
+  try { worker.synthesizer.close(); } catch {}
+  const pool = ttsPools[format];
+  const i = pool.indexOf(worker);
+  if (i >= 0) pool.splice(i, 1);
+  // crea e inserisci un nuovo worker “pulito”
+  const replacement = createSynthesizerForFormat(format);
+  pool.push(replacement);
+  return replacement;
+}
+
+
+function getOrCreateWorker(format) {
+    const pool = ttsPools[format];
+    // prova a trovarne uno non occupato
+    const free = pool.find(w => !w.busy);
+    if (free) return free;
+    // se tutti occupati ma c'è spazio, creane uno nuovo
+    if (pool.length < MAX_SYNTH_PER_FORMAT) {
+        const w = createSynthesizerForFormat(format);
+        pool.push(w);
+        return w;
+    }
+    // altrimenti scegli quello con coda più corta
+    let best = pool[0];
+    for (const w of pool) {
+        if (w.queue.length < best.queue.length) best = w;
+    }
+    return best;
+}
+
+function enqueueTtsJob(format, job) {
+    const worker = getOrCreateWorker(format);
+    worker.queue.push(job);
+    if (!worker.busy) runNextJob(worker, format);
+}
+
+function runNextJob(worker, format) {
+    if (worker.queue.length === 0) return;
+    worker.busy = true;
+
+    const job = worker.queue.shift();
+    const { ssml, res, req, contentType } = job;
+
+    let started = false;
+    let totalBytes = 0;
+    let headersSent = false;
+    let clientAborted = false;
+
+    const sendHeadersOnce = () => {
+        if (!headersSent) {
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("Transfer-Encoding", "chunked");
+            res.setHeader("Cache-Control", "no-store");
+            if (typeof res.flushHeaders === "function") res.flushHeaders();
+            headersSent = true;
+        }
+    };
+
+    // Se il client chiude, non scrivere più
+    req.on("aborted", () => { clientAborted = true; });
+
+    // Watchdog: se non parte entro 15s, annulla job
+    const watchdog = setTimeout(() => {
+        if (!started && !res.headersSent) {
+            cleanupHandlers();
+            try { res.status(504).json({ error: "Azure TTS timeout before first audio chunk" }); } catch { }
+            worker.busy = false;
+            return runNextJob(worker, format);
+        }
+    }, 15000);
+
+    // Handlers evento
+    const onSynthesizing = (_s, e) => {
+        try {
+            if (clientAborted) return;
+            const bytes = e?.result?.audioData;
+            if (bytes && bytes.byteLength) {
+                if (!started) {
+                    sendHeadersOnce();
+                    started = true;
+                }
+                totalBytes += bytes.byteLength;
+                res.write(Buffer.from(bytes));
+            }
+        } catch (err) {
+            console.error("write chunk error:", err);
+        }
+    };
+
+    const onCompleted = (_s, e) => {
+        clearTimeout(watchdog);
+        cleanupHandlers();
+        // Se non è mai arrivato niente → errore
+        if (!started || totalBytes === 0) {
+            if (!res.headersSent && !clientAborted) {
+                try { res.status(502).json({ error: "No audio produced by Azure TTS" }); } catch { }
+            } else {
+                try { res.end(); } catch { }
+            }
+        } else {
+            try { res.end(); } catch { }
+        }
+        worker.busy = false;
+        runNextJob(worker, format);
+    };
+
+    const onCanceled = (_s, e) => {
+        clearTimeout(watchdog);
+        cleanupHandlers();
+        const details = e?.errorDetails || "synthesis canceled";
+        retireAndReplaceWorker(worker, format);
+        if (!res.headersSent && !clientAborted) {
+            try { res.status(502).json({ error: "Azure TTS canceled", details }); } catch { }
+        } else {
+            try { res.end(); } catch { }
+        }
+        worker.busy = false;
+        runNextJob(worker, format);
+    };
+
+    function cleanupHandlers() {
+        // rimuovi i listener per evitare leak tra job
+        try { worker.synthesizer.synthesizing = undefined; } catch { }
+        try { worker.synthesizer.synthesisCompleted = undefined; } catch { }
+        try { worker.synthesizer.canceled = undefined; } catch { }
+    }
+
+    // Collega i listener per QUESTO job
+    worker.synthesizer.synthesizing = onSynthesizing;
+    worker.synthesizer.synthesisCompleted = onCompleted;
+    worker.synthesizer.canceled = onCanceled;
+
+    // Avvia la sintesi (SSML contiene già la voice)
+    try {
+        worker.synthesizer.speakSsmlAsync(
+            ssml,
+            () => { /* handled by events */ },
+            (err) => {
+                clearTimeout(watchdog);
+                cleanupHandlers();
+                console.error("speakSsmlAsync error:", err);
+                retireAndReplaceWorker(worker, format);
+                if (!res.headersSent && !clientAborted) {
+                    try { res.status(500).json({ error: "Azure Speech TTS failed", details: String(err) }); } catch { }
+                } else {
+                    try { res.end(); } catch { }
+                }
+                worker.busy = false;
+                runNextJob(worker, format);
+            }
+        );
+    } catch (err) {
+        clearTimeout(watchdog);
+        cleanupHandlers();
+        console.error("speakSsmlAsync throw:", err);
+        retireAndReplaceWorker(worker, format);
+        if (!res.headersSent && !clientAborted) {
+            try { res.status(500).json({ error: "Azure Speech TTS init failed", details: String(err) }); } catch { }
+        } else {
+            try { res.end(); } catch { }
+        }
+        worker.busy = false;
+        runNextJob(worker, format);
+    }
+}
+
+/* ----------------------------- END ----------------------------*/
+
+
+
+
 // Multer setup for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -451,7 +671,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
         }
 
-
+        /*
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;
             const qFormat = (req.query.format || "").toLowerCase(); // ?format=webm / mp3
@@ -573,6 +793,43 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
             }
         }
+        */
+
+        else if (service === "azureTTS-websocked-Scaleway") {
+            const { text, selectedLanguage, selectedVoice } = req.body;
+            const qFormat = (req.query.format || "").toLowerCase(); // ?format=webm / mp3
+            const wantedFormat = (qFormat === "mp3" || qFormat === "webm") ? qFormat : "webm";
+
+            if (!text || !text.trim()) {
+                return res.status(400).json({ error: "Text is required" });
+            }
+            if (!AZ_TTS_KEY || !AZ_TTS_REGION) {
+                return res.status(500).json({
+                    error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
+                });
+            }
+
+            // Mappa lingua -> voce (default)
+            const voiceMap = {
+                "français": "fr-FR-RemyMultilingualNeural",
+                "espagnol": "es-ES-ElviraNeural",
+                "anglais": "en-US-JennyNeural"
+            };
+            const lang = (selectedLanguage || "").trim().toLowerCase();
+            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
+
+            const ssml = buildSSML({ text, voice });
+            const contentType = wantedFormat === "webm" ? "audio/webm" : "audio/mpeg";
+
+            try {
+                // Accoda il job sul pool per formato
+                enqueueTtsJob(wantedFormat, { ssml, res, req, contentType });
+            } catch (e) {
+                console.error("enqueueTtsJob error:", e);
+                return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
+            }
+        }
+
 
 
         // OpenAI Streaming TTS (SDK)

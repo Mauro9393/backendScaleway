@@ -22,6 +22,8 @@ const AZ_TTS_REGION = process.env.AZURE_REGION_AI_SERVICES;
 // Dimensione massima pool per formato (aumenta se hai più concorrenza)
 const MAX_SYNTH_PER_FORMAT = 6;
 
+const MAX_QUEUE_PER_FORMAT = parseInt(process.env.AZ_TTS_MAX_QUEUE_PER_FORMAT || '50', 10);
+
 // Mappa: { webm: [worker, ...], mp3: [worker, ...] }
 const ttsPools = {
     webm: [],
@@ -837,14 +839,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             if (!ok) {
                 // Istanza satura: rispondi 429 così il client può ritentare o un'altra istanza prenderà il carico
                 return res.status(429).json({ error: "Too many TTS requests on this instance, please retry" });
-            }
-
-            try {
-                // Accoda il job sul pool per formato
-                enqueueTtsJob(wantedFormat, { ssml, res, req, contentType });
-            } catch (e) {
-                console.error("enqueueTtsJob error:", e);
-                return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
             }
         }
 

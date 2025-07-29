@@ -20,7 +20,7 @@ const AZ_TTS_KEY = process.env.AZURE_TTS_KEY_AI_SERVICES;
 const AZ_TTS_REGION = process.env.AZURE_REGION_AI_SERVICES;
 
 // Dimensione massima pool per formato (aumenta se hai più concorrenza)
-const MAX_SYNTH_PER_FORMAT = 2;
+const MAX_SYNTH_PER_FORMAT = 6;
 
 // Mappa: { webm: [worker, ...], mp3: [worker, ...] }
 const ttsPools = {
@@ -62,14 +62,14 @@ function createSynthesizerForFormat(format) {
 }
 
 function retireAndReplaceWorker(worker, format) {
-  try { worker.synthesizer.close(); } catch {}
-  const pool = ttsPools[format];
-  const i = pool.indexOf(worker);
-  if (i >= 0) pool.splice(i, 1);
-  // crea e inserisci un nuovo worker “pulito”
-  const replacement = createSynthesizerForFormat(format);
-  pool.push(replacement);
-  return replacement;
+    try { worker.synthesizer.close(); } catch { }
+    const pool = ttsPools[format];
+    const i = pool.indexOf(worker);
+    if (i >= 0) pool.splice(i, 1);
+    // crea e inserisci un nuovo worker “pulito”
+    const replacement = createSynthesizerForFormat(format);
+    pool.push(replacement);
+    return replacement;
 }
 
 
@@ -94,8 +94,20 @@ function getOrCreateWorker(format) {
 
 function enqueueTtsJob(format, job) {
     const worker = getOrCreateWorker(format);
+
+    // Conta tutti i job in attesa/attivi nel pool di questo formato
+    const totalQueued = ttsPools[format].reduce(
+        (sum, w) => sum + w.queue.length + (w.busy ? 1 : 0),
+        0
+    );
+
+    if (totalQueued >= MAX_QUEUE_PER_FORMAT) {
+        return false; // istanza satura → il chiamante risponderà 429
+    }
+
     worker.queue.push(job);
     if (!worker.busy) runNextJob(worker, format);
+    return true;
 }
 
 function runNextJob(worker, format) {
@@ -820,6 +832,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             const ssml = buildSSML({ text, voice });
             const contentType = wantedFormat === "webm" ? "audio/webm" : "audio/mpeg";
+
+            const ok = enqueueTtsJob(wantedFormat, { ssml, res, req, contentType });
+            if (!ok) {
+                // Istanza satura: rispondi 429 così il client può ritentare o un'altra istanza prenderà il carico
+                return res.status(429).json({ error: "Too many TTS requests on this instance, please retry" });
+            }
 
             try {
                 // Accoda il job sul pool per formato

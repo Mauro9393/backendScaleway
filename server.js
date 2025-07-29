@@ -888,7 +888,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "userList") {
             // aggiungi timeSession dal body (stringa 'HH:MM:SS')
             const { chatbotID, userID, userName, userScore,
-                historique, rapport, usergroup, timeSession } = req.body;
+                historique, rapport, usergroup, timeSession } = req.body; 
 
             try {
                 const result = await pool.query(

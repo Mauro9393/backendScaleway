@@ -856,7 +856,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 const ttsResp = await openai.audio.speech.create({ model: "tts-1", input: text, voice, instructions: "Speak in a cheerful and positive tone.", response_format: "mp3" });
                 res.setHeader("Content-Type", "audio/mpeg");
                 res.setHeader("Transfer-Encoding", "chunked");
-                ttsResp.body.pipe(res);
+                ttsResp.body.pipe(res); 
             } catch (err) {
                 console.error("OpenAI TTS error:", err);
                 return res.status(500).json({ error: "OpenAI TTS failed" });

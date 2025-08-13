@@ -18,9 +18,9 @@ const WebSocket = require("ws");
 const http = require("http");
 
 const AZ_ENDPOINT = process.env.AZURE_REALTIME_OPENAI_ENDPOINT;          // es. https://2707llm.openai.azure.com
-const AZ_KEY      = process.env.AZURE_REALTIME_OPENAI_API_KEY;          // KEY1/KEY2
-const AZ_DEPLOY   = process.env.AZURE_REALTIME_OPENAI_REALTIME_DEPLOYMENT; // nome deployment (NON il nome del modello)
-const AZ_VER      = process.env.AZURE_REALTIME_OPENAI_API_VERSION || "2025-04-01-preview";
+const AZ_KEY = process.env.AZURE_REALTIME_OPENAI_API_KEY;          // KEY1/KEY2
+const AZ_DEPLOY = process.env.AZURE_REALTIME_OPENAI_REALTIME_DEPLOYMENT; // nome deployment (NON il nome del modello)
+const AZ_VER = process.env.AZURE_REALTIME_OPENAI_API_VERSION || "2025-04-01-preview";
 
 
 /* ----------------------------- START --------------------------*/
@@ -1069,7 +1069,7 @@ app.listen(port, () => {
 */
 const server = http.createServer(app);
 server.listen(port, () => {
-  console.log(`HTTP+WS server on http://localhost:${port}`);
+    console.log(`HTTP+WS server on http://localhost:${port}`);
 });
 
 // === WebSocket bridge per Azure Realtime ===
@@ -1077,57 +1077,74 @@ server.listen(port, () => {
 const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOpenAI" });
 
 wss.on("connection", (clientWs) => {
-  // Costruisci URL WS verso Azure Realtime
-  const endpointHost = (AZ_ENDPOINT || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  if (!endpointHost || !AZ_KEY || !AZ_DEPLOY) {
-    clientWs.close(1011, "Missing Azure Realtime env vars");
-    return;
-  }
+    // Costruisci URL WS verso Azure Realtime
+    const endpointHost = (AZ_ENDPOINT || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (!endpointHost || !AZ_KEY || !AZ_DEPLOY) {
+        clientWs.close(1011, "Missing Azure Realtime env vars");
+        return;
+    }
 
-  const azureUrl = `wss://${endpointHost}/openai/realtime?api-version=${encodeURIComponent(AZ_VER)}&deployment=${encodeURIComponent(AZ_DEPLOY)}`;
+    const azureUrl = `wss://${endpointHost}/openai/realtime?api-version=${encodeURIComponent(AZ_VER)}&deployment=${encodeURIComponent(AZ_DEPLOY)}`;
 
-  // Connessione WS verso Azure
-  const azureWs = new WebSocket(azureUrl, {
-    headers: { "api-key": AZ_KEY },
-    perMessageDeflate: false,
-  });
+    // Connessione WS verso Azure
+    const azureWs = new WebSocket(azureUrl, {
+        headers: { "api-key": AZ_KEY },
+        perMessageDeflate: false,
+    });
 
-  const closeBoth = (code = 1000, reason = "") => {
-    try { clientWs.close(code, reason); } catch {}
-    try { azureWs.close(code, reason); } catch {}
-  };
-
-  azureWs.on("open", () => {
-    // Config iniziale di sessione (voce + VAD + formati audio)
-    const sessionUpdate = {
-      type: "session.update",
-      session: {
-        voice: "alloy", // voce integrata Realtime (puoi cambiarla)
-        turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 200, create_response: true },
-        input_audio_transcription: { model: "whisper-1" },
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        instructions: "Rispondi in italiano in modo chiaro e conciso.",
-      },
+    const closeBoth = (code = 1000, reason = "") => {
+        try { clientWs.close(code, reason); } catch { }
+        try { azureWs.close(code, reason); } catch { }
     };
-    azureWs.send(JSON.stringify(sessionUpdate));
-  });
 
-  // Azure -> Client
-  azureWs.on("message", (data) => {
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
-  });
+    azureWs.on("open", () => {
+        // Config iniziale di sessione (voce + VAD + formati audio)
+        const sessionUpdate = {
+            type: "session.update",
+            session: {
+                voice: "alloy", // voce integrata Realtime (puoi cambiarla)
+                turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 200, create_response: true },
+                input_audio_transcription: { model: "whisper-1" },
+                input_audio_format: "pcm16",
+                output_audio_format: "pcm16",
+                instructions: "Rispondi in italiano in modo chiaro e conciso.",
+            },
+        };
+        azureWs.send(JSON.stringify(sessionUpdate));
+    });
 
-  // Client -> Azure
-  clientWs.on("message", (data) => {
-    if (azureWs.readyState === WebSocket.OPEN) azureWs.send(data);
-  });
+    // Azure -> Client
+    azureWs.on("message", (data, isBinary) => {
+        try {
+            if (!isBinary) {
+                // già testo → inoltra come testo
+                if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+                return;
+            }
+            // è binario: prova a capire se in realtà è JSON testuale in Buffer
+            const txt = Buffer.isBuffer(data) ? data.toString("utf8") : "";
+            try {
+                JSON.parse(txt); // se parse va, allora è JSON
+                if (clientWs.readyState === WebSocket.OPEN) clientWs.send(txt); // invia come testo
+            } catch {
+                // non è JSON → inoltra davvero come binario
+                if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data, { binary: true });
+            }
+        } catch (e) {
+            console.error("Forward error:", e?.message || e);
+        }
+    });
 
-  clientWs.on("close", () => closeBoth(1000, "client closed"));
-  clientWs.on("error", () => closeBoth(1011, "client error"));
-  azureWs.on("close", () => closeBoth(1000, "azure closed"));
-  azureWs.on("error", (err) => {
-    console.error("Azure WS error:", err?.message || err);
-    closeBoth(1011, "azure error");
-  });
+    // Client -> Azure
+    clientWs.on("message", (data) => {
+        if (azureWs.readyState === WebSocket.OPEN) azureWs.send(data);
+    });
+
+    clientWs.on("close", () => closeBoth(1000, "client closed"));
+    clientWs.on("error", () => closeBoth(1011, "client error"));
+    azureWs.on("close", () => closeBoth(1000, "azure closed"));
+    azureWs.on("error", (err) => {
+        console.error("Azure WS error:", err?.message || err);
+        closeBoth(1011, "azure error");
+    });
 });

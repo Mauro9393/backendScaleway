@@ -13,6 +13,16 @@ const { Pool } = require('pg');
 
 const sdk = require("microsoft-cognitiveservices-speech-sdk");
 
+
+const WebSocket = require("ws");
+const http = require("http");
+
+const AZ_ENDPOINT = process.env.AZURE_REALTIME_OPENAI_ENDPOINT;          // es. https://2707llm.openai.azure.com
+const AZ_KEY      = process.env.AZURE_REALTIME_OPENAI_API_KEY;          // KEY1/KEY2
+const AZ_DEPLOY   = process.env.AZURE_REALTIME_OPENAI_REALTIME_DEPLOYMENT; // nome deployment (NON il nome del modello)
+const AZ_VER      = process.env.AZURE_REALTIME_OPENAI_API_VERSION || "2025-04-01-preview";
+
+
 /* ----------------------------- START --------------------------*/
 
 // ======== AZURE TTS POOL (riuso connessioni) ========
@@ -828,7 +838,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 "français": "fr-FR-RemyMultilingualNeural",
                 "espagnol": "es-ES-ElviraNeural",
                 "anglais": "en-US-JennyNeural"
-            }; 
+            };
             const lang = (selectedLanguage || "").trim().toLowerCase();
             const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
 
@@ -856,7 +866,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 const ttsResp = await openai.audio.speech.create({ model: "tts-1", input: text, voice, instructions: "Speak in a cheerful and positive tone.", response_format: "mp3" });
                 res.setHeader("Content-Type", "audio/mpeg");
                 res.setHeader("Transfer-Encoding", "chunked");
-                ttsResp.body.pipe(res); 
+                ttsResp.body.pipe(res);
             } catch (err) {
                 console.error("OpenAI TTS error:", err);
                 return res.status(500).json({ error: "OpenAI TTS failed" });
@@ -888,7 +898,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "userList") {
             // aggiungi timeSession dal body (stringa 'HH:MM:SS')
             const { chatbotID, userID, userName, userScore,
-                historique, rapport, usergroup, timeSession } = req.body; 
+                historique, rapport, usergroup, timeSession } = req.body;
 
             try {
                 const result = await pool.query(
@@ -958,6 +968,16 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     .header("Access-Control-Allow-Headers", "Content-Type")
                     .json({ error: err.message });
             }
+        }
+
+        // === Realtime Azure OpenAI (placeholder HTTP) ===
+        else if (service === "fullCustomRealtimeAzureOpenAI") {
+            // La Realtime richiede WebSocket, non HTTP POST.
+            // Questo endpoint serve solo a dare un errore chiaro al client HTTP.
+            return res.status(426).json({
+                error: "Use WebSocket for Azure Realtime",
+                websocket_endpoint: "/api/fullCustomRealtimeAzureOpenAI"
+            });
         }
         // ElevenLabs TTS
         else if (service === "elevenlabs") {
@@ -1042,6 +1062,72 @@ app.get("/get-azure-token", async (req, res) => {
 });
 
 // Start server
+/*
 app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
+});
+*/
+const server = http.createServer(app);
+server.listen(port, () => {
+  console.log(`HTTP+WS server on http://localhost:${port}`);
+});
+
+// === WebSocket bridge per Azure Realtime ===
+// Unico endpoint WS: /api/fullCustomRealtimeAzureOpenAI
+const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOpenAI" });
+
+wss.on("connection", (clientWs) => {
+  // Costruisci URL WS verso Azure Realtime
+  const endpointHost = (AZ_ENDPOINT || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (!endpointHost || !AZ_KEY || !AZ_DEPLOY) {
+    clientWs.close(1011, "Missing Azure Realtime env vars");
+    return;
+  }
+
+  const azureUrl = `wss://${endpointHost}/openai/realtime?api-version=${encodeURIComponent(AZ_VER)}&deployment=${encodeURIComponent(AZ_DEPLOY)}`;
+
+  // Connessione WS verso Azure
+  const azureWs = new WebSocket(azureUrl, {
+    headers: { "api-key": AZ_KEY },
+    perMessageDeflate: false,
+  });
+
+  const closeBoth = (code = 1000, reason = "") => {
+    try { clientWs.close(code, reason); } catch {}
+    try { azureWs.close(code, reason); } catch {}
+  };
+
+  azureWs.on("open", () => {
+    // Config iniziale di sessione (voce + VAD + formati audio)
+    const sessionUpdate = {
+      type: "session.update",
+      session: {
+        voice: "alloy", // voce integrata Realtime (puoi cambiarla)
+        turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 200, create_response: true },
+        input_audio_transcription: { model: "whisper-1" },
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
+        instructions: "Rispondi in italiano in modo chiaro e conciso.",
+      },
+    };
+    azureWs.send(JSON.stringify(sessionUpdate));
+  });
+
+  // Azure -> Client
+  azureWs.on("message", (data) => {
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+  });
+
+  // Client -> Azure
+  clientWs.on("message", (data) => {
+    if (azureWs.readyState === WebSocket.OPEN) azureWs.send(data);
+  });
+
+  clientWs.on("close", () => closeBoth(1000, "client closed"));
+  clientWs.on("error", () => closeBoth(1011, "client error"));
+  azureWs.on("close", () => closeBoth(1000, "azure closed"));
+  azureWs.on("error", (err) => {
+    console.error("Azure WS error:", err?.message || err);
+    closeBoth(1011, "azure error");
+  });
 });

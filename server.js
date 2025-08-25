@@ -1072,6 +1072,24 @@ server.listen(port, () => {
     console.log(`HTTP+WS server on http://localhost:${port}`);
 });
 
+// helper: decode base64 el_vs e normalizza i valori
+function parseElVS(b64) {
+    if (!b64) return null;
+    try {
+        const raw = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+        const clamp01 = v => Math.max(0, Math.min(1, Number(v)));
+        const out = {};
+        if (raw.stability !== undefined) out.stability = clamp01(raw.stability);
+        if (raw.similarity_boost !== undefined) out.similarity_boost = clamp01(raw.similarity_boost);
+        if (raw.style !== undefined) out.style = clamp01(raw.style);
+        if (raw.use_speaker_boost !== undefined) out.use_speaker_boost = !!raw.use_speaker_boost;
+        return Object.keys(out).length ? out : null;
+    } catch (e) {
+        console.warn("[Realtime] invalid el_vs:", e?.message || e);
+        return null;
+    }
+}
+
 // === WebSocket bridge per Azure Realtime ===
 // Unico endpoint WS: /api/fullCustomRealtimeAzureOpenAI
 const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOpenAI" });
@@ -1080,7 +1098,8 @@ const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOp
 // ------- AGGIUNTO 25/08 -----------
 function openElevenLabsWs({
     voiceId,
-    modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"
+    modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
+    voiceSettings = null
 }) {
     const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
     if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
@@ -1090,7 +1109,7 @@ function openElevenLabsWs({
     // PCM 24k per compatibilità con il tuo PcmStreamer(24000)
     const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
 
-    const elWs = new WebSocket(url, { perMessageDeflate: false });
+    const elWs = new WebSocket(url, { perMessageDeflate: false, headers: { "xi-api-key": apiKey } });
     let ready = false;
     const queue = [];
 
@@ -1098,8 +1117,7 @@ function openElevenLabsWs({
         ready = true;
         const initMsg = {
             text: " ",
-            xi_api_key: apiKey,
-            voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: false },
+            voice_settings: voiceSettings || undefined,
             generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
         };
         try { elWs.send(JSON.stringify(initMsg)); } catch { }
@@ -1155,6 +1173,9 @@ wss.on("connection", (clientWs, req) => {
     const clean = (s) => (s || "").replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 64); // ------- AGGIUNTO 25/08 -----------
     let elVoiceId = clean(urlObj.searchParams.get("el_voice")) || process.env.ELEVENLABS_DEFAULT_VOICE_ID; // ------- AGGIUNTO 25/08 -----------
     let elModelId = clean(urlObj.searchParams.get("el_model")) || process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"; // ------- AGGIUNTO 25/08 -----------
+
+    const elVsB64 = urlObj.searchParams.get("el_vs");
+    const voiceSettings = parseElVS(elVsB64);
 
     // opzionale: whitelist dei modelli consentiti
     const ALLOWED_EL_MODELS = new Set([ // ------- AGGIUNTO 25/08 -----------
@@ -1301,7 +1322,11 @@ wss.on("connection", (clientWs, req) => {
 
             // evita doppioni
             if (!elevenByResp.has(rid)) {
-                const el = openElevenLabsWs({ voiceId: elVoiceId, modelId: elModelId });
+                const el = openElevenLabsWs({
+                    voiceId: elVoiceId,
+                    modelId: elModelId,
+                    voiceSettings   // 👈 passa le impostazioni dal client
+                });
 
                 // Audio da ElevenLabs → re-impacchettato come eventi Azure-like per il frontend
                 el.ws.on("message", (m) => {

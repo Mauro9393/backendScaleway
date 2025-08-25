@@ -1348,7 +1348,7 @@ wss.on("connection", (clientWs, req) => {
 
             if (rid && chunk) {
                 const el = elevenByResp.get(rid);
-                if (el && el.isReady()) el.sendText(chunk);
+                if (el) el.sendText(chunk);
             }
             return;
         }

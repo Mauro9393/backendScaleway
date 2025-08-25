@@ -1076,6 +1076,63 @@ server.listen(port, () => {
 // Unico endpoint WS: /api/fullCustomRealtimeAzureOpenAI
 const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOpenAI" });
 
+
+// ------- AGGIUNTO 25/08 -----------
+function openElevenLabsWs({
+    voiceId,
+    modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"
+}) {
+    const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
+    if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
+    const apiKey = process.env.ELEVENLAB_API_KEY;
+    if (!apiKey) throw new Error("Missing ELEVENLAB_API_KEY");
+
+    // PCM 24k per compatibilità con il tuo PcmStreamer(24000)
+    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+
+    const elWs = new WebSocket(url, { perMessageDeflate: false });
+    let ready = false;
+    const queue = [];
+
+    elWs.on("open", () => {
+        ready = true;
+        const initMsg = {
+            text: " ",
+            xi_api_key: apiKey,
+            voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: false },
+            generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
+        };
+        try { elWs.send(JSON.stringify(initMsg)); } catch { }
+
+        for (const t of queue.splice(0)) {
+            try { elWs.send(JSON.stringify({ text: t })); } catch { }
+        }
+    });
+
+    return {
+        ws: elWs,
+        isReady: () => ready && elWs.readyState === WebSocket.OPEN,
+        sendText: (t) => {
+            if (!t) return;
+            if (ready && elWs.readyState === WebSocket.OPEN) {
+                try { elWs.send(JSON.stringify({ text: t })); } catch { }
+            } else {
+                queue.push(t); // ⬅️ buffer se non è ancora open
+            }
+        },
+        flushAndClose: () => {
+            try {
+                if (elWs.readyState === WebSocket.OPEN) {
+                    elWs.send(JSON.stringify({ flush: true }));
+                    elWs.send(JSON.stringify({ text: "" }));
+                }
+            } catch { }
+        }
+    };
+}
+// ---------------------- //
+
+
 wss.on("connection", (clientWs, req) => {
     const endpointHost = (AZ_ENDPOINT || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
     if (!endpointHost || !AZ_KEY || !AZ_DEPLOY) {
@@ -1092,6 +1149,20 @@ wss.on("connection", (clientWs, req) => {
         ? qVoice
         : (process.env.AZURE_REALTIME_VOICE || "echo");
 
+    const ttsProvider = (urlObj.searchParams.get("tts") || "azure").toLowerCase(); // ------- AGGIUNTO 25/08 -----------
+
+    // prendili dal client, con sanitizzazione
+    const clean = (s) => (s || "").replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 64); // ------- AGGIUNTO 25/08 -----------
+    let elVoiceId = clean(urlObj.searchParams.get("el_voice")) || process.env.ELEVENLABS_DEFAULT_VOICE_ID; // ------- AGGIUNTO 25/08 -----------
+    let elModelId = clean(urlObj.searchParams.get("el_model")) || process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"; // ------- AGGIUNTO 25/08 -----------
+
+    // opzionale: whitelist dei modelli consentiti
+    const ALLOWED_EL_MODELS = new Set([ // ------- AGGIUNTO 25/08 -----------
+        "eleven_flash_v2_5", // ------- AGGIUNTO 25/08 -----------
+        "eleven_turbo_v2_5", // ------- AGGIUNTO 25/08 -----------
+        "eleven_multilingual_v2" // ------- AGGIUNTO 25/08 -----------
+    ]); // ------- AGGIUNTO 25/08 -----------
+    if (!ALLOWED_EL_MODELS.has(elModelId)) elModelId = "eleven_flash_v2_5"; // ------- AGGIUNTO 25/08 -----------
 
     // Costruisco l’URL WS verso Azure. Aggiungo api-key anche in query per massima compatibilità.
     const azureUrl =
@@ -1124,6 +1195,20 @@ wss.on("connection", (clientWs, req) => {
         try { if (azureWs.readyState === WebSocket.OPEN) azureWs.ping(); } catch { }
     }, 15000);
 
+    // AGGIUNTO 25/08
+    const elevenByResp = new Map();
+
+    const cleanupEL = () => {
+        if (elevenByResp.size === 0) return;
+        for (const [, el] of elevenByResp) {
+            try { el.flushAndClose(); } catch { }
+            try { el.ws.close(); } catch { }
+        }
+        elevenByResp.clear();
+    };
+    //---------------
+
+
     // Quando Azure è OPEN, invio session.update e svuoto la coda
     azureWs.on("open", () => {
         azureReady = true;
@@ -1134,10 +1219,10 @@ wss.on("connection", (clientWs, req) => {
             session: {
                 // Impostazioni base: voce + formati audio + trascrizione
                 voice: initialVoice,
-                modalities: ["text", "audio"],
+                modalities: (ttsProvider === "azure") ? ["text", "audio"] : ["text"], // AGGIUNTO 25/08 // ["text", "audio"],
                 input_audio_transcription: { model: "whisper-1" },
                 input_audio_format: "pcm16",
-                output_audio_format: "pcm16",
+                ...(ttsProvider === "azure" ? { output_audio_format: "pcm16" } : {}), // AGGIUNTO 25/08 //output_audio_format: "pcm16",
                 // VAD lato server: se mandi audio, creerà automaticamente una response al silenzio
                 turn_detection: {
                     type: "server_vad",
@@ -1147,7 +1232,7 @@ wss.on("connection", (clientWs, req) => {
                     create_response: true
                 },
                 // Istruzioni di default (puoi cambiarle dal client con un altro session.update)
-                instructions: "Rispondi in italiano in modo chiaro e conciso."
+                instructions: "Reponds en francais"
             }
         };
 
@@ -1163,6 +1248,7 @@ wss.on("connection", (clientWs, req) => {
     });
 
     // Azure → Client (forward 1:1, preservando binario/testo)
+    /*
     azureWs.on("message", (data, isBinary) => {
         if (clientWs.readyState !== WebSocket.OPEN) return;
         try {
@@ -1170,15 +1256,122 @@ wss.on("connection", (clientWs, req) => {
         } catch (e) {
             console.error("[Realtime] forward Azure->Client error:", e);
         }
+    });*/
+
+    // ---------- AGGIUNTO 25/08 ------------------
+    azureWs.on("message", (data, isBinary) => {
+        if (clientWs.readyState !== WebSocket.OPEN) return;
+
+        // Se NON usi ElevenLabs, inoltra tutto com'è (comportamento attuale)
+        if (ttsProvider === "azure") {
+            try { clientWs.send(data, { binary: isBinary }); } catch (e) {
+                console.error("[Realtime] forward Azure->Client error:", e);
+            }
+            return;
+        }
+
+        // ---------- ttsProvider === "elevenlab" ----------
+        // Azure: tieni SOLO gli eventi testuali, droppa gli audio (li farà ElevenLabs)
+
+        // Se frame binario, lo ignoriamo (Azure audio binario non serve)
+        if (isBinary) return;
+
+        let txt;
+        try { txt = data.toString("utf8"); } catch { return; }
+
+        let msg;
+        try { msg = JSON.parse(txt); } catch {
+            // Se non è JSON, avanti (ma in pratica Azure manda JSON)
+            return;
+        }
+
+        const t = msg.type || "";
+
+        // 0) Inoltra SEMPRE gli eventi testuali al client (così il tuo typer funziona)
+        //    … ma se sono eventi audio Azure, scartali.
+        if (/^response\.(output_audio|audio)\./.test(t)) {
+            // DROP audio Azure
+        } else {
+            try { clientWs.send(JSON.stringify(msg)); } catch { }
+        }
+
+        // 1) response.created → apri una WS ElevenLabs per questo responseId e pipe audio->client
+        if (t === "response.created" && (msg.response?.id || msg.id)) {
+            const rid = msg.response?.id || msg.id;
+
+            // evita doppioni
+            if (!elevenByResp.has(rid)) {
+                const el = openElevenLabsWs({ voiceId: elVoiceId, modelId: elModelId });
+
+                // Audio da ElevenLabs → re-impacchettato come eventi Azure-like per il frontend
+                el.ws.on("message", (m) => {
+                    try {
+                        const d = JSON.parse(m.toString("utf8"));
+                        if (d.audio) {
+                            const out = { type: "response.output_audio.delta", response_id: rid, delta: d.audio };
+                            clientWs.send(JSON.stringify(out));
+                        }
+                        if (d.isFinal) {
+                            const done = { type: "response.output_audio.done", response_id: rid };
+                            clientWs.send(JSON.stringify(done));
+                        }
+                    } catch {
+                        // ignora frame non JSON
+                    }
+                });
+
+                el.ws.on("close", () => { elevenByResp.delete(rid); });
+                el.ws.on("error", () => { elevenByResp.delete(rid); });
+
+                elevenByResp.set(rid, el);
+            }
+            return;
+        }
+
+        // 2) Delta di testo → invialo anche a ElevenLabs (così genera l’audio)
+        if (
+            t === "response.output_text.delta" ||
+            t === "response.text.delta" ||
+            t === "response.delta" ||
+            t === "message.delta"
+        ) {
+            const rid =
+                msg.response_id ||
+                msg.response?.id ||
+                msg.id;
+
+            const chunk =
+                (typeof msg.delta === "string" && msg.delta) ||
+                (msg.output_text && typeof msg.output_text.delta === "string" && msg.output_text.delta) ||
+                (msg.text && typeof msg.text.delta === "string" && msg.text.delta) ||
+                "";
+
+            if (rid && chunk) {
+                const el = elevenByResp.get(rid);
+                if (el && el.isReady()) el.sendText(chunk);
+            }
+            return;
+        }
+
+        // 3) Fine turno → flush & close ElevenLabs (spinge gli ultimi frame)
+        if (t === "response.completed" || t === "response.done") {
+            const rid = msg.response_id || msg.response?.id || msg.id;
+            const el = rid && elevenByResp.get(rid);
+            if (el) el.flushAndClose();
+            return;
+        }
     });
+    // ---------- RIATTIVA azureWs.on("message") che si trova subito sopra ------------------
 
     azureWs.on("error", (err) => {
         console.error("[Realtime] Azure WS ERROR:", err?.message || err);
+        cleanupEL(); // AGGIUNTO 25/08
         closeBoth(1011, "azure error");
     });
 
     azureWs.on("close", (code, reason) => {
         console.warn("[Realtime] Azure WS CLOSED:", code, reason?.toString?.() || "");
+        cleanupEL();  // AGGIUNTO 25/08
         closeBoth(code || 1000, "azure closed");
     });
 
@@ -1199,11 +1392,13 @@ wss.on("connection", (clientWs, req) => {
 
     clientWs.on("error", (err) => {
         console.error("[Realtime] Client WS ERROR:", err?.message || err);
+        cleanupEL(); // AGGIUNTO 25/08
         closeBoth(1011, "client error");
     });
 
     clientWs.on("close", (code, reason) => {
         console.warn("[Realtime] Client WS CLOSED:", code, reason?.toString?.() || "");
+        cleanupEL(); // AGGIUNTO 25/08
         closeBoth(code || 1000, "client closed");
     });
 
@@ -1211,6 +1406,7 @@ wss.on("connection", (clientWs, req) => {
     setTimeout(() => {
         if (!azureReady) {
             console.error("[Realtime] Timeout opening Azure WS");
+            cleanupEL(); // AGGIUNTO 25/08
             closeBoth(1013, "azure connect timeout");
         }
     }, 15000);

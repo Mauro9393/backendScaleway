@@ -1177,56 +1177,69 @@ wssEl.on("connection", (client, req) => {
 
 // ------- AGGIUNTO 25/08 -----------
 function openElevenLabsWs({
-    voiceId,
-    modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
-    voiceSettings = null
+  voiceId,
+  modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
+  voiceSettings = null
 }) {
-    const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
-    if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
-    const apiKey = process.env.ELEVENLAB_API_KEY;
-    if (!apiKey) throw new Error("Missing ELEVENLAB_API_KEY");
+  const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
+  if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
+  const apiKey = process.env.ELEVENLAB_API_KEY;
+  if (!apiKey) throw new Error("Missing ELEVENLAB_API_KEY");
 
-    // PCM 24k per compatibilità con il tuo PcmStreamer(24000)
-    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+  const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
 
-    const elWs = new WebSocket(url, { perMessageDeflate: false, headers: { "xi-api-key": apiKey } });
-    let ready = false;
-    const queue = [];
+  const elWs = new WebSocket(url, { perMessageDeflate: false, headers: { "xi-api-key": apiKey } });
+  let ready = false;
+  const queue = [];
+  let wantFlush = false; // <-- NOVITÀ
 
-    elWs.on("open", () => {
-        ready = true;
-        const initMsg = {
-            text: " ",
-            voice_settings: voiceSettings || undefined,
-            generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
-        };
-        try { elWs.send(JSON.stringify(initMsg)); } catch { }
-
-        for (const t of queue.splice(0)) {
-            try { elWs.send(JSON.stringify({ text: t })); } catch { }
-        }
-    });
-
-    return {
-        ws: elWs,
-        isReady: () => ready && elWs.readyState === WebSocket.OPEN,
-        sendText: (t) => {
-            if (!t) return;
-            if (ready && elWs.readyState === WebSocket.OPEN) {
-                try { elWs.send(JSON.stringify({ text: t })); } catch { }
-            } else {
-                queue.push(t); // ⬅️ buffer se non è ancora open
-            }
-        },
-        flushAndClose: () => {
-            try {
-                if (elWs.readyState === WebSocket.OPEN) {
-                    elWs.send(JSON.stringify({ flush: true }));
-                    elWs.send(JSON.stringify({ text: "" }));
-                }
-            } catch { }
-        }
+  elWs.on("open", () => {
+    ready = true;
+    const initMsg = {
+      text: " ",
+      voice_settings: voiceSettings || undefined,
+      generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
     };
+    try { elWs.send(JSON.stringify(initMsg)); } catch {}
+
+    // invia i testi in coda nell'ordine
+    for (const t of queue.splice(0)) {
+      try { elWs.send(JSON.stringify({ text: t })); } catch {}
+    }
+
+    // se nel frattempo era arrivato flush → invialo ORA
+    if (wantFlush) {
+      try {
+        elWs.send(JSON.stringify({ flush: true }));
+        elWs.send(JSON.stringify({ text: "" }));
+      } catch {}
+      wantFlush = false;
+    }
+  });
+
+  return {
+    ws: elWs,
+    isReady: () => ready && elWs.readyState === WebSocket.OPEN,
+    sendText: (t) => {
+      if (!t) return;
+      if (ready && elWs.readyState === WebSocket.OPEN) {
+        try { elWs.send(JSON.stringify({ text: t })); } catch {}
+      } else {
+        queue.push(t);
+      }
+    },
+    flushAndClose: () => {
+      if (elWs.readyState === WebSocket.OPEN && ready) {
+        try {
+          elWs.send(JSON.stringify({ flush: true }));
+          elWs.send(JSON.stringify({ text: "" }));
+        } catch {}
+      } else {
+        // non ancora open → ricorda il flush
+        wantFlush = true;
+      }
+    }
+  };
 }
 // ---------------------- //
 

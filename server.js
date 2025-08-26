@@ -1079,6 +1079,7 @@ const server = http.createServer(app);
 
 const wss = new WebSocket.Server({ noServer: true });
 const wssEl = new WebSocket.Server({ noServer: true });
+const wssAzureTTS = new WebSocket.Server({ noServer: true });
 
 // ✅ Router unico per gli upgrade WS
 server.on("upgrade", (req, socket, head) => {
@@ -1090,7 +1091,7 @@ server.on("upgrade", (req, socket, head) => {
 
     if (pathname === "/api/fullCustomRealtimeAzureOpenAI") {
         wss.handleUpgrade(req, socket, head, (ws) => {
-            wss.emit("connection", ws, req); 
+            wss.emit("connection", ws, req);
         });
         return;
     }
@@ -1098,6 +1099,13 @@ server.on("upgrade", (req, socket, head) => {
     if (pathname === "/api/elevenlabs-tts") {
         wssEl.handleUpgrade(req, socket, head, (ws) => {
             wssEl.emit("connection", ws, req);
+        });
+        return;
+    }
+
+    if (pathname === "/api/azure-tts-ws") {                // 👈 nuovo
+        wssAzureTTS.handleUpgrade(req, socket, head, (ws) => {
+            wssAzureTTS.emit("connection", ws, req);
         });
         return;
     }
@@ -1128,6 +1136,112 @@ function parseElVS(b64) {
         return null;
     }
 }
+
+// util per SSML con stile, rate e pitch
+function buildSSMLv2({ text, voice, style, styleDegree, rate, pitch }) {
+    const v = voice || "fr-FR-RemyMultilingualNeural";
+    const locale = v.substring(0, 5);
+    const safe = escapeXml(text || "");
+    const prosody = (rate || pitch)
+        ? `<prosody${rate ? ` rate="${rate}"` : ""}${pitch ? ` pitch="${pitch}"` : ""}>${safe}</prosody>`
+        : safe;
+    const body = style
+        ? `<mstts:express-as style="${style}"${styleDegree ? ` styledegree="${styleDegree}"` : ""}>${prosody}</mstts:express-as>`
+        : prosody;
+
+    return `
+<speak version="1.0" xml:lang="${locale}" xmlns:mstts="https://www.w3.org/2001/mstts">
+  <voice name="${v}">${body}</voice>
+</speak>`.trim();
+}
+
+wssAzureTTS.on("connection", (ws, req) => {
+    if (!AZ_TTS_KEY || !AZ_TTS_REGION) {
+        try { ws.close(1011, "Missing Azure Speech env vars"); } catch { }
+        return;
+    }
+
+    // parametri opzionali in query: ?voice=fr-FR-RemyMultilingualNeural
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const qVoice = urlObj.searchParams.get("voice");
+
+    // istanzio un sintetizzatore per QUESTA connessione, formato PCM 24k 16bit mono
+    const speechConfig = sdk.SpeechConfig.fromSubscription(AZ_TTS_KEY, AZ_TTS_REGION);
+    speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm;
+    const synth = new sdk.SpeechSynthesizer(speechConfig);
+
+    let busy = false;
+    const queue = [];
+    let closed = false;
+
+    const doNext = () => {
+        if (closed || busy || queue.length === 0) return;
+        busy = true;
+        const job = queue.shift(); // { ssml }
+        let sentAny = false;
+
+        // stream chunk-by-chunk
+        synth.synthesizing = (_s, e) => {
+            const bytes = e?.result?.audioData;
+            if (bytes && bytes.byteLength) {
+                sentAny = true;
+                ws.send(JSON.stringify({ audio: Buffer.from(bytes).toString("base64") }));
+            }
+        };
+        synth.synthesisCompleted = () => {
+            ws.send(JSON.stringify({ done: true }));
+            busy = false;
+            // IMPORTANT: rimuovi i listener per il prossimo job
+            synth.synthesizing = undefined;
+            synth.synthesisCompleted = undefined;
+            synth.canceled = undefined;
+            doNext();
+        };
+        synth.canceled = (_s, e) => {
+            ws.send(JSON.stringify({ error: e?.errorDetails || "synthesis canceled" }));
+            busy = false;
+            synth.synthesizing = undefined;
+            synth.synthesisCompleted = undefined;
+            synth.canceled = undefined;
+            doNext();
+        };
+
+        synth.speakSsmlAsync(job.ssml, () => { }, (err) => {
+            ws.send(JSON.stringify({ error: String(err) }));
+            busy = false;
+            synth.synthesizing = undefined;
+            synth.synthesisCompleted = undefined;
+            synth.canceled = undefined;
+            doNext();
+        });
+    };
+
+    ws.on("message", (data) => {
+        let msg; try { msg = JSON.parse(data.toString()); } catch { return; }
+        if (typeof msg.text === "string") {
+            const ssml = buildSSMLv2({
+                text: msg.text,
+                voice: msg.voice || qVoice || "fr-FR-RemyMultilingualNeural",
+                style: msg.style,
+                styleDegree: msg.styleDegree,
+                rate: msg.rate,
+                pitch: msg.pitch
+            });
+            queue.push({ ssml });
+            doNext();
+        } else if (msg.flush) {
+            // niente da fare specifico con Azure; i job vanno a fine con Completed
+        }
+    });
+
+    const cleanup = () => {
+        closed = true;
+        try { synth.close(); } catch { }
+    };
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
+});
+
 
 // === WebSocket bridge per Azure Realtime ===
 // Unico endpoint WS: /api/fullCustomRealtimeAzureOpenAI
@@ -1177,69 +1291,69 @@ wssEl.on("connection", (client, req) => {
 
 // ------- AGGIUNTO 25/08 -----------
 function openElevenLabsWs({
-  voiceId,
-  modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
-  voiceSettings = null
+    voiceId,
+    modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
+    voiceSettings = null
 }) {
-  const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
-  if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
-  const apiKey = process.env.ELEVENLAB_API_KEY;
-  if (!apiKey) throw new Error("Missing ELEVENLAB_API_KEY");
+    const vId = voiceId || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
+    if (!vId) throw new Error("Missing ELEVENLABS voiceId (pass ?el_voice=... or set ELEVENLABS_DEFAULT_VOICE_ID)");
+    const apiKey = process.env.ELEVENLAB_API_KEY;
+    if (!apiKey) throw new Error("Missing ELEVENLAB_API_KEY");
 
-  const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vId)}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
 
-  const elWs = new WebSocket(url, { perMessageDeflate: false, headers: { "xi-api-key": apiKey } });
-  let ready = false;
-  const queue = [];
-  let wantFlush = false; // <-- NOVITÀ
+    const elWs = new WebSocket(url, { perMessageDeflate: false, headers: { "xi-api-key": apiKey } });
+    let ready = false;
+    const queue = [];
+    let wantFlush = false; // <-- NOVITÀ
 
-  elWs.on("open", () => {
-    ready = true;
-    const initMsg = {
-      text: " ",
-      voice_settings: voiceSettings || undefined,
-      generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
+    elWs.on("open", () => {
+        ready = true;
+        const initMsg = {
+            text: " ",
+            voice_settings: voiceSettings || undefined,
+            generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
+        };
+        try { elWs.send(JSON.stringify(initMsg)); } catch { }
+
+        // invia i testi in coda nell'ordine
+        for (const t of queue.splice(0)) {
+            try { elWs.send(JSON.stringify({ text: t })); } catch { }
+        }
+
+        // se nel frattempo era arrivato flush → invialo ORA
+        if (wantFlush) {
+            try {
+                elWs.send(JSON.stringify({ flush: true }));
+                elWs.send(JSON.stringify({ text: "" }));
+            } catch { }
+            wantFlush = false;
+        }
+    });
+
+    return {
+        ws: elWs,
+        isReady: () => ready && elWs.readyState === WebSocket.OPEN,
+        sendText: (t) => {
+            if (!t) return;
+            if (ready && elWs.readyState === WebSocket.OPEN) {
+                try { elWs.send(JSON.stringify({ text: t })); } catch { }
+            } else {
+                queue.push(t);
+            }
+        },
+        flushAndClose: () => {
+            if (elWs.readyState === WebSocket.OPEN && ready) {
+                try {
+                    elWs.send(JSON.stringify({ flush: true }));
+                    elWs.send(JSON.stringify({ text: "" }));
+                } catch { }
+            } else {
+                // non ancora open → ricorda il flush
+                wantFlush = true;
+            }
+        }
     };
-    try { elWs.send(JSON.stringify(initMsg)); } catch {}
-
-    // invia i testi in coda nell'ordine
-    for (const t of queue.splice(0)) {
-      try { elWs.send(JSON.stringify({ text: t })); } catch {}
-    }
-
-    // se nel frattempo era arrivato flush → invialo ORA
-    if (wantFlush) {
-      try {
-        elWs.send(JSON.stringify({ flush: true }));
-        elWs.send(JSON.stringify({ text: "" }));
-      } catch {}
-      wantFlush = false;
-    }
-  });
-
-  return {
-    ws: elWs,
-    isReady: () => ready && elWs.readyState === WebSocket.OPEN,
-    sendText: (t) => {
-      if (!t) return;
-      if (ready && elWs.readyState === WebSocket.OPEN) {
-        try { elWs.send(JSON.stringify({ text: t })); } catch {}
-      } else {
-        queue.push(t);
-      }
-    },
-    flushAndClose: () => {
-      if (elWs.readyState === WebSocket.OPEN && ready) {
-        try {
-          elWs.send(JSON.stringify({ flush: true }));
-          elWs.send(JSON.stringify({ text: "" }));
-        } catch {}
-      } else {
-        // non ancora open → ricorda il flush
-        wantFlush = true;
-      }
-    }
-  };
 }
 // ---------------------- //
 

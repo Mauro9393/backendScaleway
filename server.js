@@ -1089,7 +1089,7 @@ server.on("upgrade", (req, socket, head) => {
     } catch { }
 
     if (pathname === "/api/fullCustomRealtimeAzureOpenAI") {
-        wssAzure.handleUpgrade(req, socket, head, (ws) => {
+        wss.handleUpgrade(req, socket, head, (ws) => {
             wss.emit("connection", ws, req);
         });
         return;

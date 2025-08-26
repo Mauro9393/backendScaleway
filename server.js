@@ -1094,6 +1094,47 @@ function parseElVS(b64) {
 // Unico endpoint WS: /api/fullCustomRealtimeAzureOpenAI
 const wss = new WebSocket.Server({ server, path: "/api/fullCustomRealtimeAzureOpenAI" });
 
+const wssEl = new WebSocket.Server({ server, path: "/api/elevenlabs-tts" });
+
+wssEl.on("connection", (client, req) => {
+  const urlObj = new URL(req.url, `http://${req.headers.host}`);
+  const clean = s => (s || "").replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 64);
+
+  const elVoiceId = clean(urlObj.searchParams.get("el_voice")) || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
+  const elModelId = clean(urlObj.searchParams.get("el_model")) || process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5";
+  const voiceSettings = parseElVS(urlObj.searchParams.get("el_vs"));
+
+  let el;
+  try {
+    el = openElevenLabsWs({ voiceId: elVoiceId, modelId: elModelId, voiceSettings });
+  } catch (e) {
+    try { client.close(1011, e.message); } catch {}
+    return;
+  }
+
+  // ElevenLabs -> Client
+  el.ws.on("message", (m) => {
+    try {
+      const d = JSON.parse(m.toString("utf8"));
+      if (d.audio) client.send(JSON.stringify({ audio: d.audio }));   // base64 PCM 24k
+      if (d.isFinal) client.send(JSON.stringify({ done: true }));
+    } catch {}
+  });
+  el.ws.on("close", () => { try { client.close(); } catch {} });
+  el.ws.on("error", (err) => { try { client.close(1011, err?.message || "eleven error"); } catch {} });
+
+  // Client -> ElevenLabs
+  client.on("message", (data) => {
+    let msg; try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (typeof msg.text === "string") el.sendText(msg.text);
+    if (msg.flush) el.flushAndClose();
+  });
+
+  client.on("close", () => {
+    try { el.flushAndClose(); el.ws.close(); } catch {}
+  });
+});
+
 
 // ------- AGGIUNTO 25/08 -----------
 function openElevenLabsWs({

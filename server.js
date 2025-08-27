@@ -366,22 +366,41 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     console.log("🔹 Servizio ricevuto:", service);
     console.log("🔹 Dati ricevuti:", JSON.stringify(req.body));
     try {
-        // Azure OpenAI Chat (Simulator)
-        if (service === "azureOpenaiSimulateur") {
+        // Azure OpenAI Chat (Simulator) — NON STREAM
+        if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
             const apiVersion = process.env.AZURE_OPENAI_API_VERSION;
+
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
-            const response = await axiosInstance.post(apiUrl, req.body, {
-                headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
-                responseType: 'stream'
-            });
-            res.setHeader("Content-Type", "text/event-stream");
-            res.setHeader("Cache-Control", "no-cache");
-            response.data.on('data', chunk => res.write(chunk));
-            response.data.on('end', () => res.end());
-            return;
+
+            // Prendiamo i campi dal body e forziamo stream: false
+            const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+            const payload = {
+                messages: messages || [],
+                stream: false, // Disattiva streaming lato Azure
+                ...(temperature !== undefined ? { temperature } : {}),
+                ...(max_tokens !== undefined ? { max_tokens } : {}),
+                ...(top_p !== undefined ? { top_p } : {}),
+                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                ...(presence_penalty !== undefined ? { presence_penalty } : {})
+            };
+
+            try {
+                const response = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" }
+                });
+
+                // CORS e JSON standard
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.setHeader("Content-Type", "application/json");
+                return res.status(200).send(response.data);
+            } catch (err) {
+                console.error("❌ Azure Simulateur (non-stream) error:", err.response?.data || err.message);
+                return res.status(err.response?.status || 500)
+                    .json(err.response?.data || { error: "Errore interno azureOpenaiSimulateur" });
+            }
         }
 
         // Vertex Chat (batch + streaming)

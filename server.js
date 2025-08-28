@@ -997,6 +997,47 @@ app.post("/api/heygen/video/generate", async (req, res) => {
   }
 });
 
+// === HEYGEN: LiveKit v2 endpoints (proxy sicuro) ===
+app.post("/api/heygen/streaming/new", async (req, res) => {
+  try {
+    const { avatar_id, voice_id, language = "fr", version = "v2" } = req.body || {};
+    const r = await heygen.post("/v1/streaming.new", { version, avatar_id, voice_id, language });
+    res.json(r.data?.data || r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.new error", details: e?.response?.data || e.message });
+  }
+});
+
+app.post("/api/heygen/streaming/start", async (req, res) => {
+  try {
+    const { session_id } = req.body || {};
+    const r = await heygen.post("/v1/streaming.start", { session_id });
+    res.json(r.data?.data || r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.start error", details: e?.response?.data || e.message });
+  }
+});
+
+app.post("/api/heygen/streaming/task", async (req, res) => {
+  try {
+    const { session_id, text, task_type = "talk" } = req.body || {};
+    const r = await heygen.post("/v1/streaming.task", { session_id, text, task_type });
+    res.json(r.data?.data || r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.task error", details: e?.response?.data || e.message });
+  }
+});
+
+app.post("/api/heygen/streaming/stop", async (req, res) => {
+  try {
+    const { session_id } = req.body || {};
+    const r = await heygen.post("/v1/streaming.stop", { session_id });
+    res.json(r.data?.data || r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.stop error", details: e?.response?.data || e.message });
+  }
+});
+
 // === HEYGEN: Stato video (polling) ===
 app.get("/api/heygen/video/status", async (req, res) => {
   const { video_id } = req.query;

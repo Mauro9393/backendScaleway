@@ -286,6 +286,13 @@ const vertexModel = vertexAI.getGenerativeModel({
 const API_TIMEOUT = 320000; // 5 minutes
 const axiosInstance = axios.create({ timeout: API_TIMEOUT });
 
+// --- HeyGen axios ---
+const heygen = axios.create({
+  baseURL: "https://api.heygen.com",
+  timeout: API_TIMEOUT,
+  headers: { "X-Api-Key": process.env.HEYGEN_API_KEY }
+});
+
 // Global middlewares
 app.use(cors({
     origin: "*",
@@ -366,6 +373,8 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     console.log("🔹 Servizio ricevuto:", service);
     console.log("🔹 Dati ricevuti:", JSON.stringify(req.body));
     try {
+
+        // RIMUOVERE
         // Azure OpenAI Chat (Simulator) — NON STREAM
         if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
@@ -542,6 +551,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
+        // RIMUOVERE
         // Azure OpenAI Analyse (batch)
         else if (service === "azureOpenaiAnalyse") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
@@ -581,57 +591,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 return res.status(err.response?.status || 500).json({ error: "OpenAI TTS failed", details: err.message });
             }
         }
-        /*
-        else if (service === "azureTTS-Scaleway") {
-            const { text, selectedLanguage } = req.body;
-            if (!text) return res.status(400).json({ error: "Text is required" });
-
-            const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
-            const region = process.env.AZURE_REGION_AI_SERVICES;
-            const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`; // process.env.AZURE_ENDPOINT_AI_SERVICES || 
-
-            if (!apiKey || !region) {
-                return res.status(500).json({ error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)" });
-            }
-
-            // Mappa lingua -> voce Azure
-            const voiceMap = {
-                "français": "fr-FR-RemyMultilingualNeural",
-                "espagnol": "es-ES-ElviraNeural",
-                "anglais": "en-US-JennyNeural"
-            };
-            const lang = (selectedLanguage || "").trim().toLowerCase();
-            const voice = voiceMap[lang] || "fr-FR-RemyMultilingualNeural"; // default francese
-
-            const ssml = `
-        <speak version='1.0' xml:lang='${voice.substring(0, 5)}'>
-            <voice name='${voice}'>${escapeXml(text)}</voice>
-        </speak>`.trim();
-
-            try {
-                const responseTTS = await axios.post(
-                    endpoint,
-                    ssml,
-                    {
-                        headers: {
-                            "Ocp-Apim-Subscription-Key": apiKey,
-                            "Content-Type": "application/ssml+xml",
-                            // scegli il formato che vuoi. mp3 è comodo per Storyline
-                            "X-Microsoft-OutputFormat": "audio-16khz-128kbitrate-mono-mp3"
-                        },
-                        responseType: "arraybuffer",
-                        timeout: API_TIMEOUT
-                    }
-                );
-
-                res.setHeader("Content-Type", "audio/mpeg");
-                return res.send(responseTTS.data);
-            } catch (err) {
-                console.error("Azure Speech TTS error:", err.response?.data || err.message);
-                return res.status(err.response?.status || 500)
-                    .json({ error: "Azure Speech TTS failed", details: err.message });
-            }
-        } */
 
         else if (service === "azureTTS-Scaleway") {
             const {
@@ -713,130 +672,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
 
         }
-
-        /*
-        else if (service === "azureTTS-websocked-Scaleway") {
-            const { text, selectedLanguage, selectedVoice } = req.body;
-            const qFormat = (req.query.format || "").toLowerCase(); // ?format=webm / mp3
-            const wantedFormat = (qFormat === "mp3" || qFormat === "webm") ? qFormat : "webm";
-
-            if (!text || !text.trim()) {
-                return res.status(400).json({ error: "Text is required" });
-            }
-
-            const apiKey = process.env.AZURE_TTS_KEY_AI_SERVICES;
-            const region = process.env.AZURE_REGION_AI_SERVICES;
-            if (!apiKey || !region) {
-                return res.status(500).json({
-                    error: "Missing Azure Speech env vars (AZURE_TTS_KEY_AI_SERVICES, AZURE_REGION_AI_SERVICES)"
-                });
-            }
-
-            const voiceMap = {
-                "français": "fr-FR-RemyMultilingualNeural",
-                "espagnol": "es-ES-ElviraNeural",
-                "anglais": "en-US-JennyNeural"
-            };
-            const lang = (selectedLanguage || "").trim().toLowerCase();
-            const voice = (selectedVoice && selectedVoice.trim()) || voiceMap[lang] || "fr-FR-RemyMultilingualNeural";
-
-            const ssml = buildSSML({ text, voice });
-
-            try {
-                const speechConfig = sdk.SpeechConfig.fromSubscription(apiKey, region);
-
-                let contentType;
-                if (wantedFormat === "webm") {
-                    // Streaming ideale per MSE (bassa latenza)
-                    speechConfig.speechSynthesisOutputFormat =
-                        sdk.SpeechSynthesisOutputFormat.Webm24Khz16BitMonoOpus;
-                    contentType = "audio/webm";
-                } else {
-                    // Streaming progressivo MP3 (no MSE; va bene come fallback)
-                    speechConfig.speechSynthesisOutputFormat =
-                        sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
-                    contentType = "audio/mpeg";
-                }
-
-                let started = false;
-                let totalBytes = 0;
-
-                const pushStream = sdk.PushAudioOutputStream.create({
-                    write: (data) => {
-                        if (data && data.byteLength) {
-                            if (!started) {
-                                // Invia gli header SOLO al primo chunk
-                                res.setHeader("Content-Type", contentType);
-                                res.setHeader("Transfer-Encoding", "chunked");
-                                res.setHeader("Cache-Control", "no-store");
-                                if (typeof res.flushHeaders === "function") res.flushHeaders();
-                                started = true;
-                            }
-                            totalBytes += data.byteLength;
-                            res.write(Buffer.from(data)); // scrivi chunk
-                        }
-                    },
-                    close: () => {
-                        // Se non abbiamo mai scritto un byte → errore esplicito (niente "blob vuoto")
-                        if (!started || totalBytes === 0) {
-                            if (!res.headersSent) {
-                                return res.status(502).json({ error: "No audio produced by Azure TTS" });
-                            }
-                            try { res.end(); } catch { }
-                            return;
-                        }
-                        // Fine regolare
-                        try { res.end(); } catch { }
-                    }
-                });
-
-                const audioConfig = sdk.AudioConfig.fromStreamOutput(pushStream);
-                const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
-
-                // watchdog: se non parte entro X secondi, chiudi e rispondi errore
-                const watchdog = setTimeout(() => {
-                    if (!started && !res.headersSent) {
-                        try { synthesizer.close(); } catch { }
-                        return res.status(504).json({ error: "Azure TTS timeout before first audio chunk" });
-                    }
-                }, 15000);
-
-                // Avvia sintesi
-                synthesizer.speakSsmlAsync(
-                    (ssml),
-                    (result) => {
-                        clearTimeout(watchdog);
-                        try { synthesizer.close(); } catch { }
-                        // Se Azure riporta errore (anche dopo), ma non abbiamo mai scritto, torna JSON
-                        if (!started && (!result || result.reason !== sdk.ResultReason.SynthesizingAudioCompleted)) {
-                            const details = result && result.errorDetails ? result.errorDetails : "Unknown synthesis error";
-                            if (!res.headersSent) {
-                                return res.status(502).json({ error: "Azure TTS failed", details });
-                            }
-                        }
-                        // Se eravamo già partiti a streammare, la chiusura la gestisce pushStream.close()
-                    },
-                    (err) => {
-                        clearTimeout(watchdog);
-                        try { synthesizer.close(); } catch { }
-                        if (!res.headersSent) {
-                            return res.status(500).json({ error: "Azure Speech TTS failed", details: String(err) });
-                        }
-                        // Se avevamo iniziato a streammare, chiudi la connessione
-                        try { res.end(); } catch { }
-                    }
-                );
-
-                // Se il client chiude la connessione, stoppa il synth
-                req.on("aborted", () => {
-                    try { synthesizer.close(); } catch { }
-                });
-
-            } catch (e) {
-                return res.status(500).json({ error: "Azure Speech TTS init failed", details: String(e) });
-            }
-        }
-        */
 
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;
@@ -1087,6 +922,95 @@ app.get("/get-azure-token", async (req, res) => {
         res.status(500).json({ error: "Failed to generate token" });
     }
 });
+
+// ------------------ start heygen ----------------------
+
+// === HEYGEN: Streaming token (client -> server -> HeyGen) ===
+app.get("/api/heygen/streaming-token", async (req, res) => {
+  try {
+    const r = await heygen.post("/v1/streaming.create_token");
+    const token = r.data?.data?.token;
+    if (!token) return res.status(502).json({ error: "No token from HeyGen" });
+    res.json({ token });
+  } catch (e) {
+    const status = e?.response?.status || 500;
+    return res.status(status).json({ error: "HeyGen token error", details: e?.response?.data || e.message });
+  }
+});
+
+// === HEYGEN: Lista streaming avatars (per UI di scelta) ===
+app.get("/api/heygen/streaming/avatars", async (req, res) => {
+  try {
+    const r = await heygen.get("/v1/streaming/avatar.list");
+    res.json(r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen avatars error", details: e?.response?.data || e.message });
+  }
+});
+
+// === HEYGEN: Lista voices (v2) ===
+app.get("/api/heygen/voices", async (req, res) => {
+  try {
+    const r = await heygen.get("/v2/voices");
+    res.json(r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen voices error", details: e?.response?.data || e.message });
+  }
+});
+
+// === HEYGEN: Lista avatars (v2) ===
+app.get("/api/heygen/avatars", async (req, res) => {
+  try {
+    const r = await heygen.get("/v2/avatars");
+    res.json(r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen avatars v2 error", details: e?.response?.data || e.message });
+  }
+});
+
+// === HEYGEN: Generazione video (v2) ===
+app.post("/api/heygen/video/generate", async (req, res) => {
+  const {
+    avatar_id = process.env.HEYGEN_DEFAULT_AVATAR_ID || "default",
+    voice_id = process.env.HEYGEN_DEFAULT_VOICE_ID,
+    text,
+    language = process.env.HEYGEN_DEFAULT_LANG || "fr",
+    ratio = "16:9",        // opzionale: "16:9" | "9:16" | "1:1"
+    background = "green_screen" // o "transparent" (dipende dal piano) / "office" / ecc.
+  } = req.body || {};
+
+  if (!text) return res.status(400).json({ error: "text is required" });
+
+  try {
+    const r = await heygen.post("/v2/video/generate", {
+      avatar_id,
+      voice_id,
+      text,
+      language,
+      ratio,
+      background
+    });
+    // risposta contiene data.video_id
+    res.json(r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen video generate error", details: e?.response?.data || e.message });
+  }
+});
+
+// === HEYGEN: Stato video (polling) ===
+app.get("/api/heygen/video/status", async (req, res) => {
+  const { video_id } = req.query;
+  if (!video_id) return res.status(400).json({ error: "video_id is required" });
+  try {
+    // endpoint status
+    const r = await heygen.get("/v1/video_status.get", { params: { video_id }});
+    res.json(r.data);
+  } catch (e) {
+    res.status(e?.response?.status || 500).json({ error: "HeyGen video status error", details: e?.response?.data || e.message });
+  }
+});
+
+// ------------------ end heygen ----------------------
 
 // Start server
 /*

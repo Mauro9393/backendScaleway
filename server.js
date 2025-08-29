@@ -1364,6 +1364,8 @@ wss.on("connection", (clientWs, req) => {
     const clean = (s) => (s || "").replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 64); // ------- AGGIUNTO 25/08 -----------
     let elVoiceId = clean(urlObj.searchParams.get("el_voice")) || process.env.ELEVENLABS_DEFAULT_VOICE_ID; // ------- AGGIUNTO 25/08 -----------
     let elModelId = clean(urlObj.searchParams.get("el_model")) || process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"; // ------- AGGIUNTO 25/08 -----------
+    const qDeploy = clean(urlObj.searchParams.get("az_deploy"));
+    const DEPLOY = qDeploy || AZ_DEPLOY;
 
     const elVsB64 = urlObj.searchParams.get("el_vs");
     const voiceSettings = parseElVS(elVsB64);
@@ -1380,7 +1382,7 @@ wss.on("connection", (clientWs, req) => {
     const azureUrl =
         `wss://${endpointHost}/openai/realtime` +
         `?api-version=${encodeURIComponent(AZ_VER)}` +
-        `&deployment=${encodeURIComponent(AZ_DEPLOY)}` +
+        `&deployment=${encodeURIComponent(DEPLOY)}` +
         `&api-key=${encodeURIComponent(AZ_KEY)}`;
 
     console.log("[Realtime] Dialing Azure WS:", azureUrl.replace(/api-key=[^&]+/, "api-key=***"));

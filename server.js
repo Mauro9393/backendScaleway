@@ -1365,7 +1365,7 @@ wss.on("connection", (clientWs, req) => {
     let elVoiceId = clean(urlObj.searchParams.get("el_voice")) || process.env.ELEVENLABS_DEFAULT_VOICE_ID; // ------- AGGIUNTO 25/08 -----------
     let elModelId = clean(urlObj.searchParams.get("el_model")) || process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5"; // ------- AGGIUNTO 25/08 -----------
     const qDeploy = clean(urlObj.searchParams.get("az_deploy"));
-    const DEPLOY = qDeploy ; //|| AZ_DEPLOY;
+    const DEPLOY = qDeploy || AZ_DEPLOY;
 
     const elVsB64 = urlObj.searchParams.get("el_vs");
     const voiceSettings = parseElVS(elVsB64);

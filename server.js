@@ -424,7 +424,7 @@ else if (service === "azureOpenai") {
             }
         }
 
-        // Vertex Chat (batch + streaming)
+        // Vertex Chat (batch + streaming) 
         else if (service === "vertexChat") {
             // CORS already applied globally
             const { messages, stream = true } = req.body;

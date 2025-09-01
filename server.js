@@ -288,9 +288,9 @@ const axiosInstance = axios.create({ timeout: API_TIMEOUT });
 
 // --- HeyGen axios ---
 const heygen = axios.create({
-  baseURL: "https://api.heygen.com",
-  timeout: API_TIMEOUT,
-  headers: { "X-Api-Key": process.env.HEYGEN_API_KEY }
+    baseURL: "https://api.heygen.com",
+    timeout: API_TIMEOUT,
+    headers: { "X-Api-Key": process.env.HEYGEN_API_KEY }
 });
 
 // Global middlewares
@@ -374,41 +374,53 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     console.log("🔹 Dati ricevuti:", JSON.stringify(req.body));
     try {
 
-        // RIMUOVERE
         // Azure OpenAI Chat (Simulator) — NON STREAM
-        if (service === "azureOpenai") {
+        // ... dentro il tuo handler:
+else if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
-            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
-            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION;
+            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR; // es: https://xxx.openai.azure.com
+            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR; // es: gpt-4o-mini
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION; // es: 2024-08-01-preview
 
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
 
-            // Prendiamo i campi dal body e forziamo stream: false
+            // headers SSE
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.flushHeaders();
+
+            // payload con stream:true
             const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
             const payload = {
                 messages: messages || [],
-                stream: false, // Disattiva streaming lato Azure
+                stream: true,
                 ...(temperature !== undefined ? { temperature } : {}),
                 ...(max_tokens !== undefined ? { max_tokens } : {}),
                 ...(top_p !== undefined ? { top_p } : {}),
                 ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
-                ...(presence_penalty !== undefined ? { presence_penalty } : {})
+                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
             };
 
             try {
-                const response = await axiosInstance.post(apiUrl, payload, {
-                    headers: { "api-key": apiKey, "Content-Type": "application/json" }
+                const axiosResp = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" },
+                    responseType: "stream",
                 });
 
-                // CORS e JSON standard
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", "application/json");
-                return res.status(200).send(response.data);
+                // Azure restituisce già righe "data: {...}\n\n" + "data: [DONE]"
+                axiosResp.data.on("data", (chunk) => {
+                    res.write(chunk.toString("utf8"));     // passthrough 1:1
+                });
+                axiosResp.data.on("end", () => res.end());
+                axiosResp.data.on("error", (e) => { console.error(e); res.end(); });
+
             } catch (err) {
-                console.error("❌ Azure Simulateur (non-stream) error:", err.response?.data || err.message);
-                return res.status(err.response?.status || 500)
-                    .json(err.response?.data || { error: "Errore interno azureOpenaiSimulateur" });
+                console.error("❌ Azure SSE error:", err.response?.data || err.message);
+                // opzionale: invia errore come SSE
+                res.write(`data: ${JSON.stringify({ error: true, message: "azureOpenai error" })}\n\n`);
+                res.write("data: [DONE]\n\n");
+                res.end();
             }
         }
 
@@ -927,128 +939,128 @@ app.get("/get-azure-token", async (req, res) => {
 
 // === HEYGEN: Streaming token (client -> server -> HeyGen) ===
 app.get("/api/heygen/streaming-token", async (req, res) => {
-  try {
-    const r = await heygen.post("/v1/streaming.create_token");
-    const token = r.data?.data?.token;
-    if (!token) return res.status(502).json({ error: "No token from HeyGen" });
-    res.json({ token });
-  } catch (e) {
-    const status = e?.response?.status || 500;
-    return res.status(status).json({ error: "HeyGen token error", details: e?.response?.data || e.message });
-  }
+    try {
+        const r = await heygen.post("/v1/streaming.create_token");
+        const token = r.data?.data?.token;
+        if (!token) return res.status(502).json({ error: "No token from HeyGen" });
+        res.json({ token });
+    } catch (e) {
+        const status = e?.response?.status || 500;
+        return res.status(status).json({ error: "HeyGen token error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: Lista streaming avatars (per UI di scelta) ===
 app.get("/api/heygen/streaming/avatars", async (req, res) => {
-  try {
-    const r = await heygen.get("/v1/streaming/avatar.list");
-    res.json(r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen avatars error", details: e?.response?.data || e.message });
-  }
+    try {
+        const r = await heygen.get("/v1/streaming/avatar.list");
+        res.json(r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen avatars error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: Lista voices (v2) ===
 app.get("/api/heygen/voices", async (req, res) => {
-  try {
-    const r = await heygen.get("/v2/voices");
-    res.json(r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen voices error", details: e?.response?.data || e.message });
-  }
+    try {
+        const r = await heygen.get("/v2/voices");
+        res.json(r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen voices error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: Lista avatars (v2) ===
 app.get("/api/heygen/avatars", async (req, res) => {
-  try {
-    const r = await heygen.get("/v2/avatars");
-    res.json(r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen avatars v2 error", details: e?.response?.data || e.message });
-  }
+    try {
+        const r = await heygen.get("/v2/avatars");
+        res.json(r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen avatars v2 error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: Generazione video (v2) ===
 app.post("/api/heygen/video/generate", async (req, res) => {
-  const {
-    avatar_id = process.env.HEYGEN_DEFAULT_AVATAR_ID || "default",
-    voice_id = process.env.HEYGEN_DEFAULT_VOICE_ID,
-    text,
-    language = process.env.HEYGEN_DEFAULT_LANG || "fr",
-    ratio = "16:9",        // opzionale: "16:9" | "9:16" | "1:1"
-    background = "green_screen" // o "transparent" (dipende dal piano) / "office" / ecc.
-  } = req.body || {};
+    const {
+        avatar_id = process.env.HEYGEN_DEFAULT_AVATAR_ID || "default",
+        voice_id = process.env.HEYGEN_DEFAULT_VOICE_ID,
+        text,
+        language = process.env.HEYGEN_DEFAULT_LANG || "fr",
+        ratio = "16:9",        // opzionale: "16:9" | "9:16" | "1:1"
+        background = "green_screen" // o "transparent" (dipende dal piano) / "office" / ecc.
+    } = req.body || {};
 
-  if (!text) return res.status(400).json({ error: "text is required" });
+    if (!text) return res.status(400).json({ error: "text is required" });
 
-  try {
-    const r = await heygen.post("/v2/video/generate", {
-      avatar_id,
-      voice_id,
-      text,
-      language,
-      ratio,
-      background
-    });
-    // risposta contiene data.video_id
-    res.json(r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen video generate error", details: e?.response?.data || e.message });
-  }
+    try {
+        const r = await heygen.post("/v2/video/generate", {
+            avatar_id,
+            voice_id,
+            text,
+            language,
+            ratio,
+            background
+        });
+        // risposta contiene data.video_id
+        res.json(r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen video generate error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: LiveKit v2 endpoints (proxy sicuro) ===
 app.post("/api/heygen/streaming/new", async (req, res) => {
-  try {
-    const { avatar_id, voice_id, language = "fr", version = "v2" } = req.body || {};
-    const r = await heygen.post("/v1/streaming.new", { version, avatar_id, voice_id, language });
-    res.json(r.data?.data || r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.new error", details: e?.response?.data || e.message });
-  }
+    try {
+        const { avatar_id, voice_id, language = "fr", version = "v2" } = req.body || {};
+        const r = await heygen.post("/v1/streaming.new", { version, avatar_id, voice_id, language });
+        res.json(r.data?.data || r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.new error", details: e?.response?.data || e.message });
+    }
 });
 
 app.post("/api/heygen/streaming/start", async (req, res) => {
-  try {
-    const { session_id } = req.body || {};
-    const r = await heygen.post("/v1/streaming.start", { session_id });
-    res.json(r.data?.data || r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.start error", details: e?.response?.data || e.message });
-  }
+    try {
+        const { session_id } = req.body || {};
+        const r = await heygen.post("/v1/streaming.start", { session_id });
+        res.json(r.data?.data || r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.start error", details: e?.response?.data || e.message });
+    }
 });
 
 app.post("/api/heygen/streaming/task", async (req, res) => {
-  try {
-    const { session_id, text, task_type = "talk" } = req.body || {};
-    const r = await heygen.post("/v1/streaming.task", { session_id, text, task_type });
-    res.json(r.data?.data || r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.task error", details: e?.response?.data || e.message });
-  }
+    try {
+        const { session_id, text, task_type = "talk" } = req.body || {};
+        const r = await heygen.post("/v1/streaming.task", { session_id, text, task_type });
+        res.json(r.data?.data || r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.task error", details: e?.response?.data || e.message });
+    }
 });
 
 app.post("/api/heygen/streaming/stop", async (req, res) => {
-  try {
-    const { session_id } = req.body || {};
-    const r = await heygen.post("/v1/streaming.stop", { session_id });
-    res.json(r.data?.data || r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.stop error", details: e?.response?.data || e.message });
-  }
+    try {
+        const { session_id } = req.body || {};
+        const r = await heygen.post("/v1/streaming.stop", { session_id });
+        res.json(r.data?.data || r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.stop error", details: e?.response?.data || e.message });
+    }
 });
 
 // === HEYGEN: Stato video (polling) ===
 app.get("/api/heygen/video/status", async (req, res) => {
-  const { video_id } = req.query;
-  if (!video_id) return res.status(400).json({ error: "video_id is required" });
-  try {
-    // endpoint status
-    const r = await heygen.get("/v1/video_status.get", { params: { video_id }});
-    res.json(r.data);
-  } catch (e) {
-    res.status(e?.response?.status || 500).json({ error: "HeyGen video status error", details: e?.response?.data || e.message });
-  }
+    const { video_id } = req.query;
+    if (!video_id) return res.status(400).json({ error: "video_id is required" });
+    try {
+        // endpoint status
+        const r = await heygen.get("/v1/video_status.get", { params: { video_id } });
+        res.json(r.data);
+    } catch (e) {
+        res.status(e?.response?.status || 500).json({ error: "HeyGen video status error", details: e?.response?.data || e.message });
+    }
 });
 
 // ------------------ end heygen ----------------------

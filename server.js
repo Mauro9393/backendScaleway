@@ -763,12 +763,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "userList") {
             // aggiungi timeSession dal body (stringa 'HH:MM:SS')
             const { chatbotID, userID, userName, userScore,
-                historique, rapport, usergroup, timeSession, avisStars, avisText } = req.body;
+                historique, rapport, usergroup, timeSession } = req.body;
 
             try {
                 const result = await pool.query(
-                    `INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup, timesession, stars, review)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval, $9, $10)
+                    `INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup, timesession)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval)
                     RETURNING *`,
                     [
                         chatbotID,
@@ -778,9 +778,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                         historique,
                         rapport,
                         usergroup,
-                        timeSession || 'N/A',
-                        avisStars || null,
-                        avisText || null
+                        timeSession || 'N/A'
                     ]
                 );
 
@@ -834,6 +832,32 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     .header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
                     .header("Access-Control-Allow-Headers", "Content-Type")
                     .json({ error: err.message });
+            }
+        }
+
+        else if (service === "updateUserReview") {
+            const { userID, stars, review } = req.body;
+
+            try {
+                const result = await pool.query(
+                    `UPDATE userlist 
+             SET stars = $1, review = $2
+             WHERE user_email = $3
+             RETURNING *`,
+                    [stars, review, userID]
+                );
+
+                return res
+                    .status(200)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .json({
+                        message: "Recensione aggiornata!",
+                        count: result.rowCount,
+                        data: result.rows[0]
+                    });
+            } catch (err) {
+                console.error("❌ Errore aggiornamento recensione:", err);
+                res.status(500).json({ error: err.message });
             }
         }
 

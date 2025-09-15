@@ -763,12 +763,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "userList") {
             // aggiungi timeSession dal body (stringa 'HH:MM:SS')
             const { chatbotID, userID, userName, userScore,
-                historique, rapport, usergroup, timeSession } = req.body;
+                historique, rapport, usergroup, timeSession, avisStars, avisText } = req.body;
 
             try {
                 const result = await pool.query(
-                    `INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup, timesession)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval)
+                    `INSERT INTO userlist (chatbot_name, user_email, name, score, chat_history, chat_analysis, usergroup, timesession, stars, review)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval, $9, $10)
                     RETURNING *`,
                     [
                         chatbotID,
@@ -778,7 +778,9 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                         historique,
                         rapport,
                         usergroup,
-                        timeSession || 'N/A'   // fallback se non arriva nulla
+                        timeSession || 'N/A',
+                        avisStars || null,
+                        avisText || null
                     ]
                 );
 

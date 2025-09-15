@@ -375,8 +375,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     try {
 
         // Azure OpenAI Chat (Simulator) — NON STREAM
-        // ... dentro il tuo handler:
-else if (service === "azureOpenai") {
+        if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR; // es: https://xxx.openai.azure.com
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR; // es: gpt-4o-mini

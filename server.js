@@ -840,10 +840,15 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             try {
                 const result = await pool.query(
-                    `UPDATE userlist 
-             SET stars = $1, review = $2
-             WHERE user_email = $3
-             RETURNING *`,
+                    `UPDATE userlist
+                    SET stars = $1, review = $2
+                    WHERE id = (
+                    SELECT id FROM userlist 
+                    WHERE user_email = $3
+                    ORDER BY created_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    )
+                    RETURNING *`,
                     [stars, review, userID]
                 );
 

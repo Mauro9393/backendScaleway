@@ -297,7 +297,7 @@ const heygen = axios.create({
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"]
+    allowedHeaders: ["Content-Type", "x-user-api-key", "authorization"]
 }));
 app.use(express.json());
 
@@ -473,7 +473,19 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
             res.flushHeaders();
-            const stream = await openai.chat.completions.create({
+
+            // Leggi la chiave passata dal backend del progetto
+            const userKey =
+                req.get("x-user-api-key") ||
+                (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
+
+            // Usa la chiave per-riconcia; se assente, fallback all'env (compatibilità)
+            const client = userKey
+                ? new OpenAI({ apiKey: userKey })
+                : openai; // 'openai' è quello globale già creato con env
+
+
+            const stream = await client.chat.completions.create({
                 model: req.body.model,
                 messages: req.body.messages,
                 stream: true

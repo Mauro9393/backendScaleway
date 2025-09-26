@@ -10,12 +10,25 @@ const fs = require("fs");
 const path = require("path");
 const { VertexAI } = require("@google-cloud/vertexai");
 const { Pool } = require('pg');
-
 const sdk = require("microsoft-cognitiveservices-speech-sdk");
-
-
 const WebSocket = require("ws");
 const http = require("http");
+
+const crypto = require('crypto');
+const ALGO = 'aes-256-gcm';
+const KEY = Buffer.from(process.env.API_KEYS_MASTER_KEY || '', 'base64');
+if (!KEY || KEY.length !== 32) throw new Error('API_KEYS_MASTER_KEY invalida (32 bytes base64)');
+
+function decryptSecret(b64) {
+    const buf = Buffer.from(b64, 'base64');
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const ct = buf.subarray(28);
+    const decipher = crypto.createDecipheriv(ALGO, KEY, iv);
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return plain.toString('utf8');
+}
 
 const AZ_ENDPOINT = process.env.AZURE_REALTIME_OPENAI_ENDPOINT;          // es. https://2707llm.openai.azure.com
 const AZ_KEY = process.env.AZURE_REALTIME_OPENAI_API_KEY;          // KEY1/KEY2
@@ -297,7 +310,7 @@ const heygen = axios.create({
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-user-api-key", "authorization"]
+    allowedHeaders: ["Content-Type", "x-user-api-key", "authorization", "x-user-id", "x-user-email", "x-chatbot-id"]
 }));
 app.use(express.json());
 
@@ -472,34 +485,81 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         else if (service === "openaiSimulateur") {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Access-Control-Allow-Origin", "*");
             res.flushHeaders();
 
-            // Leggi la chiave passata dal backend del progetto
-            const userKey =
+            // 1) Se presente, usa chiave passata da proxy
+            let userKey =
                 req.get("x-user-api-key") ||
                 (req.get("authorization") || "").replace(/^Bearer\s+/i, "");
 
-            // Usa la chiave per-riconcia; se assente, fallback all'env (compatibilità)
-            const client = userKey
-                ? new OpenAI({ apiKey: userKey })
-                : openai; // 'openai' è quello globale già creato con env
+            try {
+                // 2) Fallback: recupera dal DB in base al chatbot_id (storyline_key) e, se disponibile, all'utente
+                if (!userKey) {
+                    const chatbotIdStr = ((req.body && req.body.chatbot_id) || req.query.chatbot_id || req.get("x-chatbot-id") || "").toString().trim();
+                    if (!chatbotIdStr) {
+                        res.write(`data: ${JSON.stringify({ error: true, message: "chatbot_id manquant" })}\n\n`);
+                        res.write("data: [DONE]\n\n"); return res.end();
+                    }
 
+                    // Opzionale: prova a identificare l'utente
+                    const userIdHdr = req.get("x-user-id");
+                    const userEmailHdr = req.get("x-user-email");
 
-            const stream = await client.chat.completions.create({
-                model: req.body.model,
-                messages: req.body.messages,
-                stream: true
-            });
-            for await (const part of stream) {
-                const delta = part.choices?.[0]?.delta?.content;
-                if (delta) {
-                    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+                    let userIdNum = userIdHdr ? Number(userIdHdr) : null;
+                    if (!userIdNum && userEmailHdr) {
+                        const rUid = await pool.query("SELECT id FROM users WHERE user_mail = $1", [userEmailHdr]);
+                        userIdNum = rUid.rows[0]?.id || null;
+                    }
+
+                    let rKey;
+                    if (userIdNum) {
+                        // Chiave per utente + provider + chatbot_id (STRINGA = storyline_key)
+                        rKey = await pool.query(
+                            `SELECT enc_key FROM api_keys
+           WHERE user_id = $1 AND provider = 'openai' AND chatbot_id = $2
+           ORDER BY updated_at DESC LIMIT 1`,
+                            [userIdNum, chatbotIdStr]
+                        );
+                    } else {
+                        // Fallback: prendi la più recente per quel chatbot_id (se non distingui l'utente)
+                        rKey = await pool.query(
+                            `SELECT enc_key FROM api_keys
+           WHERE provider = 'openai' AND chatbot_id = $1
+           ORDER BY updated_at DESC LIMIT 1`,
+                            [chatbotIdStr]
+                        );
+                    }
+
+                    if (rKey.rows.length > 0) {
+                        try { userKey = decryptSecret(rKey.rows[0].enc_key); } catch { }
+                    }
+
+                    // Ultimo fallback (se vuoi tenerlo): env globale
+                    if (!userKey && !process.env.OPENAI_API_KEY_SIMULATEUR) {
+                        res.write(`data: ${JSON.stringify({ error: true, message: "Aucune clé API disponible" })}\n\n`);
+                        res.write("data: [DONE]\n\n"); return res.end();
+                    }
                 }
+
+                const client = userKey ? new OpenAI({ apiKey: userKey }) : openai;
+
+                // 3) Stream OpenAI identico a prima
+                const stream = await client.chat.completions.create({
+                    model: req.body.model,
+                    messages: req.body.messages,
+                    stream: true
+                });
+                for await (const part of stream) {
+                    const delta = part.choices?.[0]?.delta?.content;
+                    if (delta) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+                }
+                res.write("data: [DONE]\n\n");
+                return res.end();
+            } catch (err) {
+                res.write(`data: ${JSON.stringify({ error: true, message: err.message })}\n\n`);
+                res.write("data: [DONE]\n\n"); return res.end();
             }
-            const totalTokens = stream.usage?.total_tokens || 0;
-            res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
-            res.write("data: [DONE]\n\n");
-            return res.end();
         }
 
         // OpenAI Analyse (non-stream via Threads)

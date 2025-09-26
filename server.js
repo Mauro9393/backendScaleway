@@ -283,7 +283,7 @@ fs.writeFileSync(keyPath, saKey);
 process.env.GOOGLE_APPLICATION_CREDENTIALS = keyPath;
 
 // OpenAI SDK
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_SIMULATEUR });
+//const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_SIMULATEUR });
 
 // Vertex AI setup
 const vertexAI = new VertexAI({

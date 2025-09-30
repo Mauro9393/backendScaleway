@@ -615,10 +615,10 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     }
 
                     // Ultimo fallback (se vuoi tenerlo): env globale
-                    if (!userKey && !process.env.OPENAI_API_KEY_SIMULATEUR) {
+                    /*if (!userKey && !process.env.OPENAI_API_KEY_SIMULATEUR) {
                         res.write(`data: ${JSON.stringify({ error: true, message: "Aucune clé API disponible" })}\n\n`);
                         res.write("data: [DONE]\n\n"); return res.end();
-                    }
+                    }*/
                 }
 
                 const client = userKey ? new OpenAI({ apiKey: userKey }) : openai;

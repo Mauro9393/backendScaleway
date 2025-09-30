@@ -387,7 +387,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     console.log("🔹 Dati ricevuti:", JSON.stringify(req.body));
     try {
 
-        // Azure OpenAI Chat (Simulator) — NON STREAM
+        // Azure OpenAI Chat (Simulator)
         if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
@@ -458,6 +458,62 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 res.end();
             }
         }
+
+        else if (service === "azureOpenaiNotStream") {
+            const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
+            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
+            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-11-20";
+
+            const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+
+            const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+            const payload = {
+                messages: messages || [],
+                stream: false, // ⬅️ importante
+                ...(temperature !== undefined ? { temperature } : {}),
+                ...(max_tokens !== undefined ? { max_tokens } : {}),
+                ...(top_p !== undefined ? { top_p } : {}),
+                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+            };
+
+            try {
+                const { data } = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" },
+                });
+
+                // Estraggo il testo in modo robusto (stringa o array di parti)
+                let content = "";
+                const choice = data?.choices?.[0];
+                if (choice?.message?.content) {
+                    content = Array.isArray(choice.message.content)
+                        ? choice.message.content.filter(p => p.type === "text").map(p => p.text).join("")
+                        : String(choice.message.content);
+                }
+
+                return res.status(200).json({ ok: true, content, raw: data });
+            } catch (err) {
+                const status = err?.response?.status || 500;
+                const headers = err?.response?.headers || {};
+                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+                let details = err?.response?.data;
+
+                try {
+                    if (Buffer.isBuffer(details)) details = details.toString("utf8");
+                } catch { }
+
+                // una sola risposta, niente write/end multipli ⇒ niente ERR_HTTP_HEADERS_SENT
+                return res.status(status).json({
+                    ok: false,
+                    message: "azureOpenai error",
+                    status,
+                    requestId,
+                    details,
+                });
+            }
+        }
+
 
         // Vertex Chat (batch + streaming) 
         else if (service === "vertexChat") {

@@ -390,9 +390,9 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         // Azure OpenAI Chat (Simulator) — NON STREAM
         if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
-            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR; // es: https://xxx.openai.azure.com
-            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR; // es: gpt-4o-mini
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION; // es: 2024-08-01-preview
+            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
+            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview";
 
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
 
@@ -400,9 +400,10 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("X-Accel-Buffering", "no");
             res.flushHeaders();
 
-            // payload con stream:true
             const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
             const payload = {
                 messages: messages || [],
@@ -418,19 +419,41 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 const axiosResp = await axiosInstance.post(apiUrl, payload, {
                     headers: { "api-key": apiKey, "Content-Type": "application/json" },
                     responseType: "stream",
+                    // importantissimo con SSE dietro proxy:
+                    decompress: true,
+                    transitional: { clarifyTimeoutError: true }
                 });
 
-                // Azure restituisce già righe "data: {...}\n\n" + "data: [DONE]"
                 axiosResp.data.on("data", (chunk) => {
-                    res.write(chunk.toString("utf8"));     // passthrough 1:1
+                    res.write(chunk.toString("utf8")); // passthrough 1:1 (Azure manda già "data: ...\n\n")
                 });
                 axiosResp.data.on("end", () => res.end());
-                axiosResp.data.on("error", (e) => { console.error(e); res.end(); });
+                axiosResp.data.on("error", (e) => {
+                    console.error("Azure SSE stream error:", e?.message || e);
+                    res.write(`data: ${JSON.stringify({ error: true, message: "stream_error", details: String(e) })}\n\n`);
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                });
 
             } catch (err) {
-                console.error("❌ Azure SSE error:", err.response?.data || err.message);
-                // opzionale: invia errore come SSE
-                res.write(`data: ${JSON.stringify({ error: true, message: "azureOpenai error" })}\n\n`);
+                const status = err?.response?.status || 500;
+                const headers = err?.response?.headers || {};
+                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+
+                let body = err?.response?.data;
+                if (Buffer.isBuffer(body)) { try { body = body.toString("utf8"); } catch { body = "<buffer>"; } }
+                if (typeof body === "object") { try { body = JSON.stringify(body); } catch { } }
+
+                console.error("❌ Azure SSE error:", { status, requestId, body });
+
+                // Invia i DETTAGLI al client come SSE "data: ..."
+                res.write(`data: ${JSON.stringify({
+                    error: true,
+                    message: "azureOpenai error",
+                    status,
+                    requestId,
+                    details: body || null
+                })}\n\n`);
                 res.write("data: [DONE]\n\n");
                 res.end();
             }

@@ -327,7 +327,8 @@ const pool = new Pool({
 // ================== TIMER PER-ID (IN-MEMORY) ==================
 const TIMER_ID_POLICY = {
                     //  Day * hr * mn * Sec* Ml (7 * 24 * 60 * 60 * 1000)
-    "testTimer": { ttlMs: 60 * 1000, sliding: false }
+    "testTimer": { ttlMs: 60 * 1000, sliding: false },
+    "testTimer2": { ttlMs: 60 * 1000, sliding: false }
     // If you want a strong limit add too : hardStopAt: "2025-12-31T23:59:59Z"
 };
 

@@ -337,6 +337,7 @@ const TIMER_ID_POLICY = {
 // Stato runtime: timerId -> { expiresAt:number }
 const runtimeTimers = new Map();
 const expiredSticky = new Set();
+const REQUIRE_TIMER_ID = true;
 
 function getTimerId(req) {
     // SOLO variabile "timer_chatbot_id" (body / query / header)

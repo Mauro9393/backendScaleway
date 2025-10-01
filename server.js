@@ -560,8 +560,8 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
-        // OpenAI streaming (SDK)
-        else if (service === "openaiSimulateur") {
+        // OpenAI streaming with key openai dans BD -database-
+        else if (service === "openaiSimulateurBlearn") {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
             res.setHeader("Access-Control-Allow-Origin", "*");
@@ -639,6 +639,28 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 res.write(`data: ${JSON.stringify({ error: true, message: err.message })}\n\n`);
                 res.write("data: [DONE]\n\n"); return res.end();
             }
+        }
+
+        // OpenAI streaming STL (SDK)
+        else if (service === "openaiSimulateur") {
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.flushHeaders();
+            const stream = await openai.chat.completions.create({
+                model: req.body.model,
+                messages: req.body.messages,
+                stream: true
+            });
+            for await (const part of stream) {
+                const delta = part.choices?.[0]?.delta?.content;
+                if (delta) {
+                    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+                }
+            }
+            const totalTokens = stream.usage?.total_tokens || 0;
+            res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
+            res.write("data: [DONE]\n\n");
+            return res.end();
         }
 
         // OpenAI Analyse (non-stream via Threads)

@@ -310,7 +310,7 @@ const heygen = axios.create({
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-user-api-key", "authorization", "x-user-id", "x-user-email", "x-chatbot-id"]
+    allowedHeaders: ["Content-Type", "x-user-api-key", "authorization", "x-user-id", "x-user-email", "x-chatbot-id", "x-timer-chatbot-id"]
 }));
 app.use(express.json());
 
@@ -322,6 +322,75 @@ const pool = new Pool({
         ca: process.env.PG_SSL_CA
     }
 });
+
+// START to set code with timer fot chatbot for service openaiSimulateur and azureOpenaiNotStream
+// ================== TIMER PER-ID (IN-MEMORY) ==================
+const TIMER_ID_POLICY = {
+    "testTimer": { ttlMs: 7 * 24 * 60 * 60 * 1000, sliding: true },   // 1 settimana (si rinnova ad ogni request)
+};
+
+// Stato runtime: timerId -> { expiresAt:number }
+const runtimeTimers = new Map();
+
+function getTimerId(req) {
+    // SOLO variabile "timer_chatbot_id" (body / query / header)
+    return (
+        req.body?.timer_chatbot_id ||
+        req.query?.timer_chatbot_id ||
+        req.get("x-timer-chatbot-id") ||
+        ""
+    ).toString().trim();
+}
+function getTimerPolicy(id) { return id ? TIMER_ID_POLICY[id] : null; }
+const now = () => Date.now();
+
+function ensureTimerSession(id) {
+    const pol = getTimerPolicy(id);
+    if (!pol) return null; // id non gestito → nessun timer applicato
+
+    let s = runtimeTimers.get(id);
+    const ttl = Number(pol.ttlMs || 0);
+    const hardStopAt = pol.hardStopAt ? new Date(pol.hardStopAt).getTime() : null;
+
+    if (!s) {
+        const base = ttl > 0 ? now() + ttl : now();
+        const expiresAt = hardStopAt ? (isNaN(hardStopAt) ? base : Math.min(base, hardStopAt)) : base;
+        s = { expiresAt };
+        runtimeTimers.set(id, s);
+    } else if (pol.sliding && ttl > 0 && s.expiresAt > now()) {
+        const renewed = now() + ttl;
+        s.expiresAt = hardStopAt ? Math.min(renewed, hardStopAt) : renewed;
+    }
+    return s;
+}
+
+function remainingTimerMs(id) {
+    const s = runtimeTimers.get(id);
+    return s ? Math.max(0, s.expiresAt - now()) : Infinity; // Infinity = nessun limite (id non in policy)
+}
+function isTimerExpired(id) {
+    const pol = getTimerPolicy(id);
+    if (!pol) return false;              // id non gestito → non scade mai
+    return remainingTimerMs(id) <= 0;
+}
+
+function rejectJsonTimer(res, id) {
+    res.status(403)
+        .setHeader("Access-Control-Allow-Origin", "*")
+        .setHeader("Access-Control-Expose-Headers", "X-Session-Remaining")
+        .setHeader("X-Session-Remaining", "0")
+        .json({ ok: false, error: "session_expired", timer_chatbot_id: id, remaining_ms: 0 });
+}
+
+function rejectSSETimer(res, id) {
+    try {
+        res.write(`data: ${JSON.stringify({ error: true, message: "session_expired", timer_chatbot_id: id, remaining_ms: 0 })}\n\n`);
+        res.write("data: [DONE]\n\n");
+    } finally {
+        res.end();
+    }
+}
+// END to set code with timer fot chatbot for service openaiSimulateur and azureOpenaiNotStream
 
 // SSE helper for OpenAI Threads
 async function streamAssistant(assistantId, messages, userId, res) {
@@ -514,6 +583,67 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
+        // Azure OpenAI non-stream con timer_chatbot_id
+        else if (service === "azureOpenaiNotStreamTimer") {
+            const tId = getTimerId(req);
+            ensureTimerSession(tId);
+            if (tId && isTimerExpired(tId)) { return rejectJsonTimer(res, tId); }
+
+            const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
+            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
+            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-11-20";
+            const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+
+            const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+            const payload = {
+                messages: messages || [],
+                stream: false,
+                ...(temperature !== undefined ? { temperature } : {}),
+                ...(max_tokens !== undefined ? { max_tokens } : {}),
+                ...(top_p !== undefined ? { top_p } : {}),
+                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+            };
+
+            try {
+                const { data } = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" },
+                });
+
+                if (getTimerPolicy(tId)) {
+                    res.setHeader("Access-Control-Allow-Origin", "*");
+                    res.setHeader("Access-Control-Expose-Headers", "X-Session-Remaining");
+                    res.setHeader("X-Session-Remaining", String(remainingTimerMs(tId)));
+                }
+
+                let content = "";
+                const choice = data?.choices?.[0];
+                if (choice?.message?.content) {
+                    content = Array.isArray(choice.message.content)
+                        ? choice.message.content.filter(p => p.type === "text").map(p => p.text).join("")
+                        : String(choice.message.content);
+                }
+
+                return res.status(200).json({ ok: true, content, raw: data });
+            } catch (err) {
+                const status = err?.response?.status || 500;
+                const headers = err?.response?.headers || {};
+                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+                let details = err?.response?.data;
+                try { if (Buffer.isBuffer(details)) details = details.toString("utf8"); } catch { }
+
+                return res.status(status).json({
+                    ok: false,
+                    message: "azureOpenai error",
+                    status,
+                    requestId,
+                    details,
+                });
+            }
+        }
+
+
 
         // Vertex Chat (batch + streaming) 
         else if (service === "vertexChat") {
@@ -641,7 +771,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
-        // OpenAI streaming STL (SDK)
+        // OpenAI streaming (SDK)
         else if (service === "openaiSimulateur") {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
@@ -661,6 +791,81 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
             res.write("data: [DONE]\n\n");
             return res.end();
+        }
+
+        // OpenAI streaming (SDK) con timer_chatbot_id
+        else if (service === "openaiSimulateurTimer") {
+            // SSE headers
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("X-Accel-Buffering", "no");
+
+            // Timer
+            const tId = getTimerId(req);
+            ensureTimerSession(tId);
+            if (getTimerPolicy(tId)) {
+                res.setHeader("Access-Control-Expose-Headers", "X-Session-Remaining");
+                res.setHeader("X-Session-Remaining", String(remainingTimerMs(tId)));
+            }
+            if (tId && isTimerExpired(tId)) { return rejectSSETimer(res, tId); }
+
+            res.flushHeaders();
+
+            let closed = false;
+            const killer = getTimerPolicy(tId) ? setInterval(() => {
+                if (closed) return;
+                if (isTimerExpired(tId)) {
+                    closed = true;
+                    try { rejectSSETimer(res, tId); } catch { }
+                }
+            }, 1000) : null;
+
+            res.on("close", () => { closed = true; if (killer) clearInterval(killer); });
+
+            try {
+                const { model, messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+                const stream = await openai.chat.completions.create({
+                    model,
+                    messages,
+                    stream: true,
+                    ...(temperature !== undefined ? { temperature } : {}),
+                    ...(max_tokens !== undefined ? { max_tokens } : {}),
+                    ...(top_p !== undefined ? { top_p } : {}),
+                    ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                    ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+                });
+
+                for await (const part of stream) {
+                    if (closed) break;
+                    if (getTimerPolicy(tId) && isTimerExpired(tId)) {
+                        closed = true;
+                        try { rejectSSETimer(res, tId); } catch { }
+                        break;
+                    }
+                    const delta = part.choices?.[0]?.delta?.content;
+                    if (delta) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+                }
+
+                const totalTokens = stream.usage?.total_tokens || 0;
+                try {
+                    res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                } catch { }
+            } catch (err) {
+                console.error("openaiSimulateurTimer error:", err);
+                if (!closed) {
+                    try {
+                        res.write(`data: ${JSON.stringify({ error: true, message: "stream_failed", details: String(err?.message || err) })}\n\n`);
+                        res.write("data: [DONE]\n\n");
+                        res.end();
+                    } catch { }
+                }
+            } finally {
+                if (killer) clearInterval(killer);
+            }
         }
 
         // OpenAI Analyse (non-stream via Threads)
@@ -1123,7 +1328,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 // Secure endpoint to obtain Azure Speech token
 app.get("/get-azure-token", async (req, res) => {
     const apiKey = process.env.AZURE_SPEECH_API_KEY;
-    const region = process.env.AZURE_REGION;
+    const region = process.env.AZURE_REGION_AI_SERVICES;
     if (!apiKey || !region) return res.status(500).json({ error: "Azure keys missing in the backend" });
     try {
         const tokenRes = await axios.post(

@@ -326,7 +326,7 @@ const pool = new Pool({
 // START to set code with timer fot chatbot for service openaiSimulateur and azureOpenaiNotStream
 // ================== TIMER PER-ID (IN-MEMORY) ==================
 const TIMER_ID_POLICY = {
-                    //  Day * hr * mn * Sec* Ml (7 * 24 * 60 * 60 * 1000)
+    //  Day * hr * mn * Sec* Ml (7 * 24 * 60 * 60 * 1000)
     "testTimer": { ttlMs: 60 * 1000, sliding: false },
     "testTimer2": { ttlMs: 60 * 1000, sliding: false },
     "testTimer3": { ttlMs: 60 * 1000, sliding: false }
@@ -335,6 +335,7 @@ const TIMER_ID_POLICY = {
 
 // Stato runtime: timerId -> { expiresAt:number }
 const runtimeTimers = new Map();
+const expiredSticky = new Set();
 
 function getTimerId(req) {
     // SOLO variabile "timer_chatbot_id" (body / query / header)
@@ -350,7 +351,13 @@ const now = () => Date.now();
 
 function ensureTimerSession(id) {
     const pol = getTimerPolicy(id);
-    if (!pol) return null; // id non gestito → nessun timer applicato
+    if (!pol) return null;               // id non gestito → nessun timer applicato
+    if (expiredSticky.has(id)) {
+        // Mantieni un record con expiresAt=0 così remaining=0
+        let s = runtimeTimers.get(id);
+        if (!s) { s = { expiresAt: 0 }; runtimeTimers.set(id, s); }
+        return s;
+    }
 
     let s = runtimeTimers.get(id);
     const ttl = Number(pol.ttlMs || 0);
@@ -374,26 +381,35 @@ function remainingTimerMs(id) {
 }
 function isTimerExpired(id) {
     const pol = getTimerPolicy(id);
-    if (!pol) return false;              // id non gestito → non scade mai
-    return remainingTimerMs(id) <= 0;
+    if (!pol) return false; // id non gestito → non scade mai
+    const rem = remainingTimerMs(id);
+    const expired = rem <= 0;
+    if (expired) {
+        expiredSticky.add(id);       // non permettere ricreazione
+        runtimeTimers.set(id, { expiresAt: 0 }); // garantisci remaining=0
+    }
+    return expired;
 }
 
-function rejectJsonTimer(res, id) {
-    res.status(403)
+function rejectJsonTimer(res, id, reason = "session_expired", status = 403) {
+    if (id) { expiredSticky.add(id); runtimeTimers.set(id, { expiresAt: 0 }); }
+    res.status(status)
         .setHeader("Access-Control-Allow-Origin", "*")
         .setHeader("Access-Control-Expose-Headers", "X-Session-Remaining")
         .setHeader("X-Session-Remaining", "0")
-        .json({ ok: false, error: "session_expired", timer_chatbot_id: id, remaining_ms: 0 });
+        .json({ ok: false, error: reason, timer_chatbot_id: id, remaining_ms: 0 });
 }
 
-function rejectSSETimer(res, id) {
+function rejectSSETimer(res, id, reason = "session_expired") {
+    if (id) { expiredSticky.add(id); runtimeTimers.set(id, { expiresAt: 0 }); }
     try {
-        res.write(`data: ${JSON.stringify({ error: true, message: "session_expired", timer_chatbot_id: id, remaining_ms: 0 })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, message: reason, timer_chatbot_id: id, remaining_ms: 0 })}\n\n`);
         res.write("data: [DONE]\n\n");
     } finally {
         res.end();
     }
 }
+
 // END to set code with timer fot chatbot for service openaiSimulateur and azureOpenaiNotStream
 
 // SSE helper for OpenAI Threads
@@ -590,8 +606,19 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         // Azure OpenAI non-stream con timer_chatbot_id
         else if (service === "azureOpenaiNotStreamTimer") {
             const tId = getTimerId(req);
+
+            // Richiesta di ID obbligatorio e whitelistato
+            if (REQUIRE_TIMER_ID && !tId) {
+                return rejectJsonTimer(res, tId, "missing_timer_id", 400);
+            }
+            if (REQUIRE_TIMER_ID && !getTimerPolicy(tId)) {
+                return rejectJsonTimer(res, tId, "invalid_timer_id", 403);
+            }
+
             ensureTimerSession(tId);
-            if (tId && isTimerExpired(tId)) { return rejectJsonTimer(res, tId); }
+            if (tId && isTimerExpired(tId)) {
+                return rejectJsonTimer(res, tId);
+            }
 
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
@@ -808,12 +835,25 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             // Timer
             const tId = getTimerId(req);
+
+            // ID richiesto e whitelistato
+            if (REQUIRE_TIMER_ID && !tId) {
+                return rejectSSETimer(res, tId, "missing_timer_id");
+            }
+            if (REQUIRE_TIMER_ID && !getTimerPolicy(tId)) {
+                return rejectSSETimer(res, tId, "invalid_timer_id");
+            }
+
+            // Crea/aggiorna sessione; se scaduta → tombstone e chiudi
             ensureTimerSession(tId);
+            if (tId && isTimerExpired(tId)) {
+                return rejectSSETimer(res, tId);
+            }
+
             if (getTimerPolicy(tId)) {
                 res.setHeader("Access-Control-Expose-Headers", "X-Session-Remaining");
                 res.setHeader("X-Session-Remaining", String(remainingTimerMs(tId)));
             }
-            if (tId && isTimerExpired(tId)) { return rejectSSETimer(res, tId); }
 
             res.flushHeaders();
 

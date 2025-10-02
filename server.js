@@ -334,9 +334,21 @@ const TIMER_ID_POLICY = {
         sliding: false,
         hardStopAt: "2025-10-02T08:15:00Z"
     },
-    "testTimer2": { ttlMs: 60 * 1000, sliding: false },
-    "testTimer3": { ttlMs: 60 * 1000, sliding: false },
-    "testTimer4": { ttlMs: 60 * 1000, sliding: false }
+    "testTimer2": {
+        ttlMs: THREE_YEARS_MS,
+        sliding: false,
+        hardStopAt: "2025-10-02T08:20:00Z"
+    },
+    "testTimer3": {
+        ttlMs: THREE_YEARS_MS,
+        sliding: false,
+        hardStopAt: "2025-10-02T08:25:00Z"
+    },
+    "testTimer4": {
+        ttlMs: THREE_YEARS_MS,
+        sliding: false,
+        hardStopAt: "2025-10-02T08:30:00Z"
+    }
     // If you want a strong limit add too : hardStopAt: "2025-12-31T23:59:59Z"
 };
 

@@ -332,24 +332,8 @@ const TIMER_ID_POLICY = {
     "testTimer": {
         ttlMs: THREE_YEARS_MS,
         sliding: false,
-        hardStopAt: "2025-10-02T08:15:00Z"
-    },
-    "testTimer2": {
-        ttlMs: THREE_YEARS_MS,
-        sliding: false,
-        hardStopAt: "2025-10-02T08:20:00Z"
-    },
-    "testTimer3": {
-        ttlMs: THREE_YEARS_MS,
-        sliding: false,
-        hardStopAt: "2025-10-02T08:25:00Z"
-    },
-    "testTimer4": {
-        ttlMs: THREE_YEARS_MS,
-        sliding: false,
-        hardStopAt: "2025-10-02T08:30:00Z"
+        hardStopAt: "2025-10-02T12:00:00Z"
     }
-    // If you want a strong limit add too : hardStopAt: "2025-12-31T23:59:59Z"
 };
 
 // Stato runtime: timerId -> { expiresAt:number }

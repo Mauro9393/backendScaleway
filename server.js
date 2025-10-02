@@ -332,7 +332,7 @@ const TIMER_ID_POLICY = {
     "testTimer": {
         ttlMs: THREE_YEARS_MS,
         sliding: false,
-        hardStopAt: "2025-10-02T12:00:00Z"
+        hardStopAt: "2025-10-02T18:00:00Z" 
     }
 };
 

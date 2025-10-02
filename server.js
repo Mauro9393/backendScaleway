@@ -325,9 +325,15 @@ const pool = new Pool({
 
 // START to set code with timer fot chatbot for service openaiSimulateur and azureOpenaiNotStream
 // ================== TIMER PER-ID (IN-MEMORY) ==================
+const THREE_YEARS_MS = 3 * 365 * 24 * 60 * 60 * 1000;
+// Summer + 2h - Winter + 1h
 const TIMER_ID_POLICY = {
     //  Day * hr * mn * Sec* Ml (7 * 24 * 60 * 60 * 1000)
-    "testTimer": { ttlMs: 60 * 1000, sliding: false },
+    "testTimer": {
+        ttlMs: THREE_YEARS_MS,
+        sliding: false,
+        hardStopAt: "2025-10-02T08:15:00Z"
+    },
     "testTimer2": { ttlMs: 60 * 1000, sliding: false },
     "testTimer3": { ttlMs: 60 * 1000, sliding: false },
     "testTimer4": { ttlMs: 60 * 1000, sliding: false }

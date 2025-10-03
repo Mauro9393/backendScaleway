@@ -1011,8 +1011,17 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_COACH;
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION_COACH;
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION_COACH || "2024-11-20";
+
+            if (!apiKey || !endpoint || !deployment) {
+                return res.status(500).json({
+                    ok: false, message: "Azure env missing", details: {
+                        hasKey: !!apiKey, hasEndpoint: !!endpoint, hasDeployment: !!deployment
+                    }
+                });
+            }
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+            
             const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
             const payload = {
                 messages: messages || [],

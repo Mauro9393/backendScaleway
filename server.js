@@ -332,14 +332,14 @@ const TIMER_ID_POLICY = {
     "testTimer": {
         ttlMs: THREE_YEARS,
         sliding: false,
-        hardStopAt: "2025-10-03T18:00:00Z" 
+        hardStopAt: "2025-10-03T18:00:00Z"
     }
 };
 
 // Stato runtime: timerId -> { expiresAt:number }
 const runtimeTimers = new Map();
 const expiredSticky = new Set();
-const REQUIRE_TIMER_ID = true; 
+const REQUIRE_TIMER_ID = true;
 
 function getTimerId(req) {
     // SOLO variabile "timer_chatbot_id" (body / query / header)
@@ -962,29 +962,46 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             return res.end();
         }
 
-        // OpenAI Analyse (chat completions non-stream)
+        // OpenAI Analyse (chat completions NON-stream, risposta uniforme)
         else if (service === "openaiAnalyse") {
-            res.setHeader("Content-Type", "text/event-stream");
-            res.setHeader("Cache-Control", "no-cache");
-            res.setHeader("Connection", "keep-alive");
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            res.flushHeaders();
             try {
-                const stream = await openai.chat.completions.create({
-                    model: req.body.model,
-                    messages: req.body.messages,
-                    stream: true
+                const { model, messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+                const resp = await openai.chat.completions.create({
+                    model: model || "gpt-4.1-mini",
+                    messages: messages || [],
+                    stream: false,
+                    ...(temperature !== undefined ? { temperature } : {}),
+                    ...(max_tokens !== undefined ? { max_tokens } : {}),
+                    ...(top_p !== undefined ? { top_p } : {}),
+                    ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                    ...(presence_penalty !== undefined ? { presence_penalty } : {}),
                 });
-                for await (const part of stream) {
-                    const delta = part.choices?.[0]?.delta?.content;
-                    if (delta) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+
+                // estrai testo in modo robusto
+                let content = "";
+                const choice = resp?.choices?.[0];
+                if (choice?.message?.content) {
+                    content = Array.isArray(choice.message.content)
+                        ? choice.message.content
+                            .filter(p => p && (p.type === "text" || typeof p === "string"))
+                            .map(p => (typeof p === "string" ? p : (p.text || "")))
+                            .join("")
+                        : String(choice.message.content);
+                } else if (typeof choice?.text === "string") {
+                    content = choice.text;
                 }
-                res.write("data: [DONE]\n\n");
-                res.end();
+
+                return res.status(200).json({ ok: true, content, raw: resp });
             } catch (err) {
-                console.error("❌ Errore nello stream openaiAnalyse:", err.message);
-                res.write(`data: ${JSON.stringify({ error: "Errore durante lo streaming AI." })}\n\n`);
-                res.end();
+                const status = err?.response?.status || 500;
+                let details = err?.response?.data;
+                try { if (Buffer.isBuffer(details)) details = details.toString("utf8"); } catch { }
+                return res.status(status).json({
+                    ok: false,
+                    message: "openaiAnalyse error",
+                    status,
+                    details
+                });
             }
         }
 
@@ -996,12 +1013,51 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_COACH;
             const apiVersion = process.env.AZURE_OPENAI_API_VERSION_COACH;
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+            const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+            const payload = {
+                messages: messages || [],
+                stream: false,
+                ...(temperature !== undefined ? { temperature } : {}),
+                ...(max_tokens !== undefined ? { max_tokens } : {}),
+                ...(top_p !== undefined ? { top_p } : {}),
+                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+            };
+
             try {
-                const response = await axiosInstance.post(apiUrl, req.body, { headers: { 'api-key': apiKey, 'Content-Type': 'application/json' } });
-                return res.json(response.data);
+                const { data } = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" },
+                });
+
+                // estrai testo in modo robusto (Azure può dare stringa o array di parti)
+                let content = "";
+                const choice = data?.choices?.[0];
+                if (choice?.message?.content) {
+                    content = Array.isArray(choice.message.content)
+                        ? choice.message.content
+                            .filter(p => p && (p.type === "text" || typeof p === "string"))
+                            .map(p => (typeof p === "string" ? p : (p.text || "")))
+                            .join("")
+                        : String(choice.message.content);
+                } else if (typeof choice?.text === "string") {
+                    content = choice.text;
+                }
+
+                return res.status(200).json({ ok: true, content, raw: data });
             } catch (err) {
-                console.error("❌ Azure Analyse Error:", err.response?.data || err.message);
-                return res.status(err.response?.status || 500).json(err.response?.data || { error: "Errore interno Azure Analyse" });
+                const status = err?.response?.status || 500;
+                const headers = err?.response?.headers || {};
+                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+                let details = err?.response?.data;
+                try { if (Buffer.isBuffer(details)) details = details.toString("utf8"); } catch { }
+
+                return res.status(status).json({
+                    ok: false,
+                    message: "azureOpenaiAnalyse error",
+                    status,
+                    requestId,
+                    details,
+                });
             }
         }
 

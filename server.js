@@ -284,6 +284,7 @@ process.env.GOOGLE_APPLICATION_CREDENTIALS = keyPath;
 
 // OpenAI SDK
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_SIMULATEUR });
+const openaiCreps = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_SIMULATEUR });
 
 // Vertex AI setup
 const vertexAI = new VertexAI({
@@ -828,6 +829,27 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             return res.end();
         }
 
+        else if (service === "openaiSimulateurCreps") {
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.flushHeaders();
+            const stream = await openaiCreps.chat.completions.create({
+                model: req.body.model,
+                messages: req.body.messages,
+                stream: true
+            });
+            for await (const part of stream) {
+                const delta = part.choices?.[0]?.delta?.content;
+                if (delta) {
+                    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+                }
+            }
+            const totalTokens = stream.usage?.total_tokens || 0;
+            res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
+            res.write("data: [DONE]\n\n");
+            return res.end();
+        }
+
         // OpenAI streaming (SDK) con timer_chatbot_id
         else if (service === "openaiSimulateurTimer") {
             // SSE headers
@@ -916,52 +938,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
-        // OpenAI Analyse (non-stream via Threads)
-        else if (service === "assistantOpenaiAnalyse") {
-            const assistantId = process.env.OPENAI_ASSISTANTID;
-            // create thread & run, then poll until complete
-            const thread = await openai.beta.threads.create({ messages: req.body.messages });
-            const run = await openai.beta.threads.runs.create(thread.id, { assistant_id: assistantId });
-            let status;
-            do {
-                await new Promise(r => setTimeout(r, 1000));
-                status = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-            } while (status.status !== "completed" && status.status !== "failed");
-            if (status.status !== "completed") {
-                return res.status(500).json({ error: "Assistant run failed", details: status.status });
-            }
-            const msgs = await openai.beta.threads.messages.list(thread.id, { limit: 1, order: "desc" });
-            const answer = msgs.data[0]?.content?.[0]?.text?.value || "";
-            return res.json({ answer });
-        }
-
-        // Assistant OpenAI Analyse Streaming
-        else if (service === "assistantOpenaiAnalyseStreaming") {
-            const assistantId = process.env.OPENAI_ASSISTANTID;
-            let thread;
-            if (req.body.threadId) {
-                thread = { id: req.body.threadId };
-                for (const msg of req.body.messages) {
-                    await openai.beta.threads.messages.create(thread.id, msg);
-                }
-            } else {
-                thread = await openai.beta.threads.create({ messages: req.body.messages });
-            }
-            res.setHeader("Content-Type", "text/event-stream");
-            res.setHeader("Cache-Control", "no-cache");
-            res.flushHeaders();
-            if (!req.body.threadId) {
-                res.write(`data: ${JSON.stringify({ threadId: thread.id })}\n\n`);
-            }
-            const stream = await openai.beta.threads.runs.createAndStream(thread.id, { assistant_id: assistantId, stream: true });
-            for await (const event of stream) {
-                const delta = event.data?.delta?.content;
-                if (delta) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
-            }
-            res.write("data: [DONE]\n\n");
-            return res.end();
-        }
-
         // OpenAI Analyse (chat completions NON-stream, risposta uniforme)
         else if (service === "openaiAnalyse") {
             try {
@@ -1021,7 +997,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 });
             }
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
-            
+
             const { messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
             const payload = {
                 messages: messages || [],

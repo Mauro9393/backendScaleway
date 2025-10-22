@@ -1510,7 +1510,7 @@ app.post("/api/heygen/video/generate", async (req, res) => {
 app.post("/api/heygen/streaming/new", async (req, res) => {
     try {
         const { avatar_id, voice_id, language = "fr", version = "v2" } = req.body || {};
-        const r = await heygen.post("/v1/streaming.new", { version, avatar_id, voice_id, language });
+        const r = await heygen.post("/v1/streaming.new", { version, avatar_id, voice_id, language, background: "transparent" });
         res.json(r.data?.data || r.data);
     } catch (e) {
         res.status(e?.response?.status || 500).json({ error: "HeyGen streaming.new error", details: e?.response?.data || e.message });

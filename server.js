@@ -939,9 +939,18 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         }
 
         // OpenAI Analyse (chat completions NON-stream, risposta uniforme)
+        /*
         else if (service === "openaiAnalyse") {
             try {
-                const { model, messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty } = req.body || {};
+                const {
+                    model,
+                    messages,
+                    temperature,
+                    max_tokens,
+                    top_p,
+                    frequency_penalty,
+                    presence_penalty
+                } = req.body || {};
                 const resp = await openai.chat.completions.create({
                     model: model || "gpt-4.1-mini",
                     messages: messages || [],
@@ -977,6 +986,112 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     message: "openaiAnalyse error",
                     status,
                     details
+                });
+            }
+        }
+        */
+
+        // OpenAI Analyse (Responses API NON-stream, risposta uniforme)
+        else if (service === "openaiAnalyse") {
+            try {
+                const {
+                    model,
+                    messages = [],
+                    temperature,
+                    max_tokens,
+                    top_p,
+                    frequency_penalty,
+                    presence_penalty,
+                } = req.body || {};
+
+                // 1. Estrai eventuale system/developer prompt come instructions
+                let instructions;
+                const conversationForInput = [];
+
+                for (const m of messages) {
+                    // Normalizza il contenuto in stringa (può essere string o array di parti)
+                    let textContent = "";
+                    if (typeof m.content === "string") {
+                        textContent = m.content;
+                    } else if (Array.isArray(m.content)) {
+                        textContent = m.content
+                            .map(p =>
+                                typeof p === "string"
+                                    ? p
+                                    : (p && (p.text || p.content || "")) // fallback sicuro
+                            )
+                            .join("");
+                    } else if (m && typeof m.content === "object" && m.content !== null) {
+                        // tipo { text: "..."} ecc.
+                        textContent = m.content.text || m.content.content || "";
+                    }
+
+                    if (
+                        (m.role === "system" || m.role === "developer") &&
+                        instructions === undefined
+                    ) {
+                        // prendi solo il PRIMO system/dev come instructions
+                        instructions = textContent;
+                    } else {
+                        // tutto il resto va nell'input conversazionale
+                        // La Responses API accetta array di messaggi {role, content}
+                        conversationForInput.push({
+                            role: m.role,      // "user" | "assistant"
+                            content: textContent,
+                        });
+                    }
+                }
+
+                // Se per qualche ragione non abbiamo messaggi (edge case),
+                // evita di mandare [] vuoto: manda stringa vuota
+                const finalInput =
+                    conversationForInput.length === 0
+                        ? ""
+                        : conversationForInput;
+
+                // 2. Chiama la nuova Responses API
+                const resp = await openai.responses.create({
+                    model: model || "gpt-4o-mini", // era "gpt-4.1-mini", puoi scegliere il tuo default
+                    input: finalInput,
+                    ...(instructions ? { instructions } : {}),
+
+                    // Parametri di controllo stile Chat Completions
+                    ...(temperature !== undefined ? { temperature } : {}),
+                    ...(top_p !== undefined ? { top_p } : {}),
+                    // Chat Completions usava max_tokens; Responses usa max_output_tokens
+                    ...(max_tokens !== undefined
+                        ? { max_output_tokens: max_tokens }
+                        : {}),
+                    ...(frequency_penalty !== undefined
+                        ? { frequency_penalty }
+                        : {}),
+                    ...(presence_penalty !== undefined
+                        ? { presence_penalty }
+                        : {}),
+                });
+
+                // 3. Estrai testo finale
+                // Niente più choices[0].message.content:
+                // Responses API ti dà direttamente .output_text
+                const content = resp.output_text || "";
+
+                return res.status(200).json({
+                    ok: true,
+                    content,
+                    raw: resp, // <- oggetto completo: usage, tokens, ecc.
+                });
+            } catch (err) {
+                const status = err?.response?.status || 500;
+                let details = err?.response?.data;
+                try {
+                    if (Buffer.isBuffer(details)) details = details.toString("utf8");
+                } catch { /* ignore */ }
+
+                return res.status(status).json({
+                    ok: false,
+                    message: "openaiAnalyse error",
+                    status,
+                    details,
                 });
             }
         }

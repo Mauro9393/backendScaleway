@@ -876,6 +876,10 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     finalInput = nonSystem;
                 }
 
+                if (!Array.isArray(finalInput) || finalInput.length === 0) {
+                    finalInput = [{ role: "user", content: "" }];
+                }
+
                 // --- chiamata Responses API in streaming con instructions ---
                 const stream = await openai.responses.create({
                     model: model || "gpt-4o",

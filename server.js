@@ -868,7 +868,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
                 // --- chiamiamo la Responses API in streaming ---
                 const stream = await openai.responses.create({
-                    model: model || "gpt-4.1-mini", // fallback se il client non manda il modello
+                    model: model || "gpt-4o", // fallback se il client non manda il modello
                     input: messages || [],
                     stream: true,
                     ...(temperature !== undefined ? { temperature } : {}),
@@ -955,7 +955,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     })}\n\n`);
                     res.write("data: [DONE]\n\n");
                 } catch { /* ignore */ }
-
                 return res.end();
             }
         }
@@ -981,7 +980,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             return res.end();
         }
 
-        // OpenAI streaming (SDK) con timer_chatbot_id
+        // OpenAI streaming chat-completion (SDK) con timer_chatbot_id
         else if (service === "openaiSimulateurTimer") {
             // SSE headers
             res.setHeader("Content-Type", "text/event-stream");

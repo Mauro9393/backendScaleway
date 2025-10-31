@@ -1098,101 +1098,95 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         */
 
         // OpenAI Analyse (Responses API NON-stream, risposta uniforme)
+        // OpenAI Analyse (Responses API NON-stream, risposta uniforme)
         else if (service === "openaiAnalyse") {
             try {
                 const {
                     model,
+                    // Nuovo percorso consigliato:
+                    input,
+                    instructions,
+                    // Retro-compatibilità:
                     messages = [],
                     temperature,
                     max_tokens,
+                    max_output_tokens,
                     top_p,
                     frequency_penalty,
                     presence_penalty,
                 } = req.body || {};
 
-                // 1. Estrai eventuale system/developer prompt come instructions
-                let instructions;
-                const conversationForInput = [];
+                // 1) Costruisci instructions + input finali a partire da (input || messages)
+                let finalInstructions = instructions || null;
 
-                for (const m of messages) {
-                    // Normalizza il contenuto in stringa (può essere string o array di parti)
+                // Prendi la sorgente grezza (preferisci input se arriva già pronto)
+                let raw = Array.isArray(input) ? input : (Array.isArray(messages) ? messages : []);
+
+                // Normalizza e separa system/developer
+                const conversationForInput = [];
+                for (const m of raw) {
+                    if (!m) continue;
+
+                    // --- normalizza content in stringa ---
                     let textContent = "";
                     if (typeof m.content === "string") {
                         textContent = m.content;
                     } else if (Array.isArray(m.content)) {
                         textContent = m.content
-                            .map(p =>
-                                typeof p === "string"
-                                    ? p
-                                    : (p && (p.text || p.content || "")) // fallback sicuro
-                            )
+                            .map(p => (typeof p === "string" ? p : (p && (p.text || p.content || ""))))
                             .join("");
-                    } else if (m && typeof m.content === "object" && m.content !== null) {
-                        // tipo { text: "..."} ecc.
+                    } else if (m && typeof m.content === "object") {
                         textContent = m.content.text || m.content.content || "";
                     }
 
-                    if (
-                        (m.role === "system" || m.role === "developer") &&
-                        instructions === undefined
-                    ) {
-                        // prendi solo il PRIMO system/dev come instructions
-                        instructions = textContent;
-                    } else {
-                        // tutto il resto va nell'input conversazionale
-                        // La Responses API accetta array di messaggi {role, content}
-                        conversationForInput.push({
-                            role: m.role,      // "user" | "assistant"
-                            content: textContent,
-                        });
+                    if ((m.role === "system" || m.role === "developer") && !finalInstructions) {
+                        finalInstructions = textContent;
+                    } else if (m.role === "user" || m.role === "assistant") {
+                        conversationForInput.push({ role: m.role, content: textContent });
                     }
                 }
 
-                // Se per qualche ragione non abbiamo messaggi (edge case),
-                // evita di mandare [] vuoto: manda stringa vuota
-                const finalInput =
-                    conversationForInput.length === 0
-                        ? ""
-                        : conversationForInput;
+                // 2) Prepara il payload Responses API
+                const effectiveMaxOutputTokens =
+                    max_output_tokens !== undefined
+                        ? max_output_tokens
+                        : (max_tokens !== undefined ? max_tokens : undefined);
 
-                // 2. Chiama la nuova Responses API
-                const resp = await openai.responses.create({
-                    model: model || "gpt-4o-mini", // era "gpt-4.1-mini", puoi scegliere il tuo default
-                    input: finalInput,
-                    ...(instructions ? { instructions } : {}),
-
-                    // Parametri di controllo stile Chat Completions
+                const payload = {
+                    model: model || "gpt-4o-mini",
+                    ...(finalInstructions ? { instructions: finalInstructions } : {}),
                     ...(temperature !== undefined ? { temperature } : {}),
                     ...(top_p !== undefined ? { top_p } : {}),
-                    // Chat Completions usava max_tokens; Responses usa max_output_tokens
-                    ...(max_tokens !== undefined
-                        ? { max_output_tokens: max_tokens }
-                        : {}),
-                    ...(frequency_penalty !== undefined
-                        ? { frequency_penalty }
-                        : {}),
-                    ...(presence_penalty !== undefined
-                        ? { presence_penalty }
-                        : {}),
-                });
+                    ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                    ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+                    ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {}),
+                };
 
-                // 3. Estrai testo finale
-                // Niente più choices[0].message.content:
-                // Responses API ti dà direttamente .output_text
+                // Se abbiamo conversazione, usa input; altrimenti usa prompt:"" per evitare l'errore “missing_required_parameter”
+                if (conversationForInput.length > 0) {
+                    payload.input = conversationForInput;
+                } else {
+                    payload.prompt = "";  // seed minimo (alternativa: payload.input = [{ role:"user", content:"" }])
+                }
+
+                // 3) Chiamata NON-stream
+                const resp = await openai.responses.create(payload);
+
+                // 4) Estrai testo (Responses API espone .output_text)
                 const content = resp.output_text || "";
 
                 return res.status(200).json({
                     ok: true,
                     content,
-                    raw: resp, // <- oggetto completo: usage, tokens, ecc.
+                    raw: resp,
                 });
+
             } catch (err) {
                 const status = err?.response?.status || 500;
                 let details = err?.response?.data;
                 try {
                     if (Buffer.isBuffer(details)) details = details.toString("utf8");
-                } catch { /* ignore */ }
-
+                } catch { }
                 return res.status(status).json({
                     ok: false,
                     message: "openaiAnalyse error",
@@ -1201,6 +1195,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 });
             }
         }
+
 
         // RIMUOVERE
         // Azure OpenAI Analyse (batch)

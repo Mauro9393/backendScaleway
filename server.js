@@ -482,11 +482,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
     try {
 
         // Azure OpenAI Chat (Simulator)
+        /*
         if (service === "azureOpenai") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview";
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2025-03-01-preview";
 
             const apiUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
 
@@ -551,7 +552,156 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 res.write("data: [DONE]\n\n");
                 res.end();
             }
+        }*/
+
+        // Azure OpenAI Response (Simulator)
+        if (service === "azureOpenai") {
+            const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
+            const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
+            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
+            // Responses API (versione recente)
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2025-03-01-preview";
+
+            const apiUrl = `${endpoint}/openai/deployments/${deployment}/responses?api-version=${apiVersion}`;
+
+            // SSE headers
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("X-Accel-Buffering", "no");
+            res.flushHeaders();
+
+            // ⬇️ qui ACCETTIAMO SOLO input + instructions
+            const {
+                input,              // string | [{role:'user'|'assistant', content:string}, ...]
+                instructions,       // string
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
+                max_tokens,
+                max_output_tokens
+            } = req.body || {};
+
+            // Validazioni minime
+            if (instructions !== undefined && typeof instructions !== "string") {
+                res.write(`data: ${JSON.stringify({ error: true, message: "instructions must be a string" })}\n\n`);
+                res.write("data: [DONE]\n\n"); return res.end();
+            }
+            if (input === undefined) {
+                res.write(`data: ${JSON.stringify({ error: true, message: "input is required" })}\n\n`);
+                res.write("data: [DONE]\n\n"); return res.end();
+            }
+
+            // Normalizza 'input' in uno dei formati accettati dalla Responses API
+            // – se è una stringa, trasformiamola in un turno user
+            let finalInput = input;
+            if (typeof input === "string") {
+                finalInput = [{ role: "user", content: input }];
+            } else if (Array.isArray(input)) {
+                // niente: lo passiamo tal quale (ci aspettiamo [{role, content}, ...])
+            } else {
+                res.write(`data: ${JSON.stringify({ error: true, message: "input must be string or array of {role,content}" })}\n\n`);
+                res.write("data: [DONE]\n\n"); return res.end();
+            }
+
+            const effectiveMaxOutputTokens =
+                max_output_tokens !== undefined ? max_output_tokens :
+                    (max_tokens !== undefined ? max_tokens : undefined);
+
+            const payload = {
+                input: finalInput,
+                ...(instructions ? { instructions } : {}),
+                stream: true,
+                ...(temperature !== undefined ? { temperature } : {}),
+                ...(top_p !== undefined ? { top_p } : {}),
+                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+                ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {}),
+            };
+
+            try {
+                const axiosResp = await axiosInstance.post(apiUrl, payload, {
+                    headers: { "api-key": apiKey, "Content-Type": "application/json" },
+                    responseType: "stream",
+                    decompress: true,
+                    transitional: { clarifyTimeoutError: true }
+                });
+
+                // 🔁 Adattatore: Responses events → finto Chat Completions delta
+                axiosResp.data.on("data", (buf) => {
+                    const chunk = buf.toString("utf8").trim();
+                    for (const line of chunk.split("\n")) {
+                        const s = line.trim();
+                        if (!s.startsWith("data:")) continue;
+                        const jsonStr = s.slice(5).trim();
+                        if (jsonStr === "[DONE]") {
+                            res.write("data: [DONE]\n\n");
+                            continue;
+                        }
+                        let evt; try { evt = JSON.parse(jsonStr); } catch { continue; }
+
+                        const t = evt.type || "";
+
+                        // Delta testuale
+                        if (t === "response.output_text.delta") {
+                            const deltaText = evt.delta || "";
+                            if (deltaText) {
+                                res.write(`data: ${JSON.stringify({
+                                    choices: [{ delta: { content: deltaText } }]
+                                })}\n\n`);
+                            }
+                            continue;
+                        }
+
+                        // Fine risposta → invia usage opzionale (compat col tuo client)
+                        if (t === "response.completed") {
+                            const u = evt.response?.usage || {};
+                            const total = u.total_tokens ?? ((u.input_tokens || 0) + (u.output_tokens || 0));
+                            res.write(`data: ${JSON.stringify({ usage: { total_tokens: total } })}\n\n`);
+                            continue;
+                        }
+                    }
+                });
+
+                axiosResp.data.on("end", () => {
+                    try { res.write("data: [DONE]\n\n"); } catch { }
+                    res.end();
+                });
+
+                axiosResp.data.on("error", (e) => {
+                    console.error("Azure Responses SSE error:", e?.message || e);
+                    try {
+                        res.write(`data: ${JSON.stringify({ error: true, message: "stream_error", details: String(e) })}\n\n`);
+                        res.write("data: [DONE]\n\n");
+                    } finally { res.end(); }
+                });
+
+            } catch (err) {
+                const status = err?.response?.status || 500;
+                const headers = err?.response?.headers || {};
+                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+
+                let body = err?.response?.data;
+                if (Buffer.isBuffer(body)) { try { body = body.toString("utf8"); } catch { body = "<buffer>"; } }
+                if (typeof body === "object") { try { body = JSON.stringify(body) } catch { } }
+
+                console.error("❌ Azure Responses SSE error:", { status, requestId, body });
+
+                try {
+                    res.write(`data: ${JSON.stringify({
+                        error: true,
+                        message: "azureOpenai error",
+                        status,
+                        requestId,
+                        details: body || null
+                    })}\n\n`);
+                    res.write("data: [DONE]\n\n");
+                } finally { res.end(); }
+            }
         }
+
 
         else if (service === "azureOpenaiNotStream") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
@@ -1286,6 +1436,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
+        /*
         else if (service === "azureTTS-Scaleway") {
             const {
                 text,
@@ -1366,6 +1517,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
 
         }
+            */
 
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;

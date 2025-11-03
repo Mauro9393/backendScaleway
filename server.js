@@ -559,10 +559,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
-            // Responses API (versione recente)
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2025-03-01-preview";
-
-            const apiUrl = `${endpoint}/openai/deployments/${deployment}/responses?api-version=${apiVersion}`;
+            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview";
 
             // SSE headers
             res.setHeader("Access-Control-Allow-Origin", "*");
@@ -572,135 +569,118 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             res.setHeader("X-Accel-Buffering", "no");
             res.flushHeaders();
 
-            // ⬇️ qui ACCETTIAMO SOLO input + instructions
-            const {
-                input,              // string | [{role:'user'|'assistant', content:string}, ...]
-                instructions,       // string
-                temperature,
-                top_p,
-                frequency_penalty,
-                presence_penalty,
-                max_tokens,
-                max_output_tokens
-            } = req.body || {};
-
-            // Validazioni minime
-            if (instructions !== undefined && typeof instructions !== "string") {
-                res.write(`data: ${JSON.stringify({ error: true, message: "instructions must be a string" })}\n\n`);
-                res.write("data: [DONE]\n\n"); return res.end();
-            }
-            if (input === undefined) {
-                res.write(`data: ${JSON.stringify({ error: true, message: "input is required" })}\n\n`);
-                res.write("data: [DONE]\n\n"); return res.end();
-            }
-
-            // Normalizza 'input' in uno dei formati accettati dalla Responses API
-            // – se è una stringa, trasformiamola in un turno user
-            let finalInput = input;
-            if (typeof input === "string") {
-                finalInput = [{ role: "user", content: input }];
-            } else if (Array.isArray(input)) {
-                // niente: lo passiamo tal quale (ci aspettiamo [{role, content}, ...])
-            } else {
-                res.write(`data: ${JSON.stringify({ error: true, message: "input must be string or array of {role,content}" })}\n\n`);
-                res.write("data: [DONE]\n\n"); return res.end();
-            }
-
-            const effectiveMaxOutputTokens =
-                max_output_tokens !== undefined ? max_output_tokens :
-                    (max_tokens !== undefined ? max_tokens : undefined);
-
-            const payload = {
-                input: finalInput,
-                ...(instructions ? { instructions } : {}),
-                stream: true,
-                ...(temperature !== undefined ? { temperature } : {}),
-                ...(top_p !== undefined ? { top_p } : {}),
-                ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
-                ...(presence_penalty !== undefined ? { presence_penalty } : {}),
-                ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {}),
-            };
-
             try {
-                const axiosResp = await axiosInstance.post(apiUrl, payload, {
+                // Normalizza input/instructions (il client ti manda input/instructions, NON messages)
+                let { input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
+                if (!Array.isArray(input) || input.length === 0) {
+                    input = [{ role: "user", content: "" }]; // seed minimo per il welcome
+                }
+
+                const effectiveMaxOutputTokens = (max_output_tokens ?? max_tokens);
+
+                // Chiamiamo la Responses API in streaming
+                const url = `${endpoint}/openai/deployments/${deployment}/responses?api-version=${apiVersion}`;
+                const payload = {
+                    input,
+                    ...(instructions ? { instructions } : {}),
+                    stream: true,
+                    ...(temperature !== undefined ? { temperature } : {}),
+                    ...(top_p !== undefined ? { top_p } : {}),
+                    ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
+                    ...(presence_penalty !== undefined ? { presence_penalty } : {}),
+                    ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {}),
+                };
+
+                const axiosResp = await axiosInstance.post(url, payload, {
                     headers: { "api-key": apiKey, "Content-Type": "application/json" },
                     responseType: "stream",
                     decompress: true,
-                    transitional: { clarifyTimeoutError: true }
                 });
 
-                // 🔁 Adattatore: Responses events → finto Chat Completions delta
-                axiosResp.data.on("data", (buf) => {
-                    const chunk = buf.toString("utf8").trim();
-                    for (const line of chunk.split("\n")) {
+                // Parser SSE Azure → rimappiamo SOLO i delta testuali verso il tuo formato client
+                axiosResp.data.on("data", (chunk) => {
+                    const text = chunk.toString("utf8");
+                    // Azure manda già righe tipo "data: {...}\n\n"
+                    for (const line of text.split("\n")) {
                         const s = line.trim();
                         if (!s.startsWith("data:")) continue;
-                        const jsonStr = s.slice(5).trim();
-                        if (jsonStr === "[DONE]") {
+                        const json = s.slice(5).trim();
+                        if (json === "[DONE]") {
                             res.write("data: [DONE]\n\n");
                             continue;
                         }
-                        let evt; try { evt = JSON.parse(jsonStr); } catch { continue; }
+                        let evt;
+                        try { evt = JSON.parse(json); } catch { continue; }
 
-                        const t = evt.type || "";
-
-                        // Delta testuale
-                        if (t === "response.output_text.delta") {
-                            const deltaText = evt.delta || "";
-                            if (deltaText) {
-                                res.write(`data: ${JSON.stringify({
-                                    choices: [{ delta: { content: deltaText } }]
-                                })}\n\n`);
+                        // Mappa gli eventi Responses API in delta compatibile col client
+                        switch (evt.type) {
+                            case "response.output_text.delta": {
+                                const deltaText = evt.delta || "";
+                                if (deltaText) {
+                                    const payloadClient = { choices: [{ delta: { content: deltaText } }] };
+                                    res.write(`data: ${JSON.stringify(payloadClient)}\n\n`);
+                                }
+                                break;
                             }
-                            continue;
-                        }
-
-                        // Fine risposta → invia usage opzionale (compat col tuo client)
-                        if (t === "response.completed") {
-                            const u = evt.response?.usage || {};
-                            const total = u.total_tokens ?? ((u.input_tokens || 0) + (u.output_tokens || 0));
-                            res.write(`data: ${JSON.stringify({ usage: { total_tokens: total } })}\n\n`);
-                            continue;
+                            case "response.completed": {
+                                const usage = evt.response?.usage;
+                                const totalTokens = (usage?.total_tokens != null)
+                                    ? usage.total_tokens
+                                    : ((usage?.input_tokens || 0) + (usage?.output_tokens || 0));
+                                res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
+                                break;
+                            }
+                            case "response.error": {
+                                res.write(`data: ${JSON.stringify({ error: true, message: evt.error?.message || "azure error" })}\n\n`);
+                                break;
+                            }
+                            default:
+                                // ignora gli altri eventi o aggiungi altri mapping se ti servono
+                                break;
                         }
                     }
                 });
 
                 axiosResp.data.on("end", () => {
                     try { res.write("data: [DONE]\n\n"); } catch { }
-                    res.end();
+                    try { res.end(); } catch { }
                 });
 
                 axiosResp.data.on("error", (e) => {
-                    console.error("Azure Responses SSE error:", e?.message || e);
                     try {
-                        res.write(`data: ${JSON.stringify({ error: true, message: "stream_error", details: String(e) })}\n\n`);
+                        res.write(`data: ${JSON.stringify({ error: true, message: "stream_error", details: String(e?.message || e) })}\n\n`);
                         res.write("data: [DONE]\n\n");
-                    } finally { res.end(); }
+                        res.end();
+                    } catch { }
                 });
 
+                // IMPORTANTE: fermati qui. Evita che il catch esterno risponda di nuovo.
+                return;
+
             } catch (err) {
+                // Se sei qui, probabilmente NON hai ancora scritto nulla.
+                // Serializza soltanto informazioni "safe".
                 const status = err?.response?.status || 500;
                 const headers = err?.response?.headers || {};
                 const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
-
                 let body = err?.response?.data;
+
                 if (Buffer.isBuffer(body)) { try { body = body.toString("utf8"); } catch { body = "<buffer>"; } }
-                if (typeof body === "object") { try { body = JSON.stringify(body) } catch { } }
+                if (typeof body === "object") { try { body = JSON.stringify(body); } catch { body = "<unserializable>"; } }
 
-                console.error("❌ Azure Responses SSE error:", { status, requestId, body });
+                // Se gli header sono già partiti (improbabile in questo path), non rispondere.
+                if (res.headersSent) return;
 
-                try {
-                    res.write(`data: ${JSON.stringify({
-                        error: true,
-                        message: "azureOpenai error",
-                        status,
-                        requestId,
-                        details: body || null
-                    })}\n\n`);
-                    res.write("data: [DONE]\n\n");
-                } finally { res.end(); }
+                return res.status(status).json({
+                    ok: false,
+                    message: "azureOpenai error",
+                    status,
+                    requestId,
+                    details: body || null
+                });
             }
         }
+
 
 
         else if (service === "azureOpenaiNotStream") {
@@ -1753,6 +1733,13 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             return res.status(400).json({ error: "Invalid service" });
         }
     } catch (error) {
+
+        // ⬇️ evita di rispondere due volte
+        if (res.headersSent) {
+            console.error("❌ (post-catch) headers already sent:", error?.message || error);
+            return;
+        }
+        
         const status = error?.response?.status || 500;
         const headers = error?.response?.headers || {};
         const requestId = headers["x-requestid"] || headers["x-ms-requestid"] || "";

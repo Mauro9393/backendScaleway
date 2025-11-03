@@ -613,15 +613,25 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                         try { evt = JSON.parse(json); } catch { continue; }
 
                         // Mappa gli eventi Responses API in delta compatibile col client
+                        // dentro axiosResp.data.on("data") → for (const line of text.split("\n")) { ... }
                         switch (evt.type) {
-                            case "response.output_text.delta": {
-                                const deltaText = evt.delta || "";
+                            case "response.output_text.delta":
+                            case "response.delta":
+                            case "message.delta": {
+                                // prova a prendere il testo in tutti i formati
+                                const deltaText =
+                                    evt.delta ||
+                                    (evt.output_text && evt.output_text.delta) ||
+                                    (evt.text && evt.text.delta) ||
+                                    "";
+
                                 if (deltaText) {
                                     const payloadClient = { choices: [{ delta: { content: deltaText } }] };
                                     res.write(`data: ${JSON.stringify(payloadClient)}\n\n`);
                                 }
                                 break;
                             }
+                            case "response.output_text.done":
                             case "response.completed": {
                                 const usage = evt.response?.usage;
                                 const totalTokens = (usage?.total_tokens != null)
@@ -635,7 +645,8 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                                 break;
                             }
                             default:
-                                // ignora gli altri eventi o aggiungi altri mapping se ti servono
+                                // opzionale: loggare per debug
+                                // console.log("Azure evt:", evt.type);
                                 break;
                         }
                     }

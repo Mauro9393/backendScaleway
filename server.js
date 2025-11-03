@@ -1416,7 +1416,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }
 
-        /*
         else if (service === "azureTTS-Scaleway") {
             const {
                 text,
@@ -1497,7 +1496,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
 
         }
-            */
 
         else if (service === "azureTTS-websocked-Scaleway") {
             const { text, selectedLanguage, selectedVoice } = req.body;
@@ -1739,7 +1737,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             console.error("❌ (post-catch) headers already sent:", error?.message || error);
             return;
         }
-        
+
         const status = error?.response?.status || 500;
         const headers = error?.response?.headers || {};
         const requestId = headers["x-requestid"] || headers["x-ms-requestid"] || "";

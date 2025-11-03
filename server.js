@@ -572,8 +572,24 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             try {
                 // Normalizza input/instructions (il client ti manda input/instructions, NON messages)
                 let { input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
-                if (!Array.isArray(input) || input.length === 0) {
-                    input = [{ role: "user", content: "" }]; // seed minimo per il welcome
+                // Normalizza "input" nel formato Responses (parti testuali)
+                function toParts(msg) {
+                    // già in parts?
+                    if (Array.isArray(msg?.content)) return msg;
+                    const text = (typeof msg?.content === "string" ? msg.content : "");
+                    return {
+                        role: msg?.role || "user",
+                        content: [{ type: "input_text", text }]
+                    };
+                }
+
+                if (!Array.isArray(input)) input = [];
+
+                input = input.map(toParts);
+
+                // Seed minimo se vuoto (es. welcome)
+                if (input.length === 0) {
+                    input = [{ role: "user", content: [{ type: "input_text", text: "Bonjour" }] }];
                 }
 
                 const effectiveMaxOutputTokens = (max_output_tokens ?? max_tokens);

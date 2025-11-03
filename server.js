@@ -612,34 +612,56 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     responseType: "stream",
                     decompress: true,
                 });
+                let sseBuffer = ""; // accumula chunk parziali
 
-                // Parser SSE Azure → rimappiamo SOLO i delta testuali verso il tuo formato client
                 axiosResp.data.on("data", (chunk) => {
-                    const text = chunk.toString("utf8");
-                    // Azure manda già righe tipo "data: {...}\n\n"
-                    for (const line of text.split("\n")) {
-                        const s = line.trim();
-                        if (!s.startsWith("data:")) continue;
-                        const json = s.slice(5).trim();
-                        if (json === "[DONE]") {
-                            res.write("data: [DONE]\n\n");
+                    sseBuffer += chunk.toString("utf8");
+
+                    // Gli eventi SSE sono separati da una riga vuota \n\n
+                    // (alcuni proxy possono normalizzare a \r?\n)
+                    let idx;
+                    while ((idx = sseBuffer.indexOf("\n\n")) !== -1) {
+                        const rawEvent = sseBuffer.slice(0, idx);
+                        sseBuffer = sseBuffer.slice(idx + 2); // salta \n\n
+
+                        // Ogni evento può avere più linee "field: value"
+                        // Ci interessa "data:"; "event:" è opzionale.
+                        const lines = rawEvent.split(/\r?\n/);
+                        let eventName = null;
+                        let dataLine = "";
+
+                        for (const line of lines) {
+                            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+                            else if (line.startsWith("data:")) {
+                                // Attenzione: ci possono essere più data: per evento → concatenale con \n
+                                const payload = line.slice(5).trimStart();
+                                dataLine = dataLine ? dataLine + "\n" + payload : payload;
+                            }
+                            // le altre linee (id:, retry:, commenti) si possono ignorare
+                        }
+
+                        if (!dataLine) continue;
+                        if (dataLine === "[DONE]") {
+                            try { res.write("data: [DONE]\n\n"); } catch { }
                             continue;
                         }
-                        let evt;
-                        try { evt = JSON.parse(json); } catch { continue; }
 
-                        // Mappa gli eventi Responses API in delta compatibile col client
-                        // dentro axiosResp.data.on("data") → for (const line of text.split("\n")) { ... }
+                        let evt;
+                        try { evt = JSON.parse(dataLine); } catch {
+                            // se non è JSON lasciamo perdere questo evento
+                            continue;
+                        }
+
                         switch (evt.type) {
                             case "response.output_text.delta":
                             case "response.delta":
                             case "message.delta": {
-                                // prova a prendere il testo in tutti i formati
                                 const deltaText =
-                                    evt.delta ||
-                                    (evt.output_text && evt.output_text.delta) ||
-                                    (evt.text && evt.text.delta) ||
-                                    "";
+                                    evt.delta?.output_text?.content?.[0]?.text // alcuni SDK annidano così
+                                    || evt.delta
+                                    || evt.output_text?.delta
+                                    || evt.text?.delta
+                                    || "";
 
                                 if (deltaText) {
                                     const payloadClient = { choices: [{ delta: { content: deltaText } }] };
@@ -647,22 +669,26 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                                 }
                                 break;
                             }
+
                             case "response.output_text.done":
                             case "response.completed": {
-                                const usage = evt.response?.usage;
+                                const usage = evt.response?.usage || evt.usage;
                                 const totalTokens = (usage?.total_tokens != null)
                                     ? usage.total_tokens
                                     : ((usage?.input_tokens || 0) + (usage?.output_tokens || 0));
+
                                 res.write(`data: ${JSON.stringify({ usage: { total_tokens: totalTokens } })}\n\n`);
                                 break;
                             }
+
                             case "response.error": {
                                 res.write(`data: ${JSON.stringify({ error: true, message: evt.error?.message || "azure error" })}\n\n`);
                                 break;
                             }
+
                             default:
-                                // opzionale: loggare per debug
-                                // console.log("Azure evt:", evt.type);
+                                // opzionale: log per debug
+                                // console.log("Azure evt:", eventName || evt.type);
                                 break;
                         }
                     }

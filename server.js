@@ -267,9 +267,6 @@ function runNextJob(worker, format) {
 
 /* ----------------------------- END ----------------------------*/
 
-
-
-
 // Multer setup for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 

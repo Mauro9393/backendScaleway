@@ -552,11 +552,11 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         }*/
 
         // Azure OpenAI Response (Simulator)
-        if (service === "azureOpenai") {
+        if (service === "azureOpenaiResponse") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
             const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
-            const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview";
+            const apiVersion = process.env.AZURE_RESPONSE_OPENAI_API_VERSION || "2024-08-01-preview";
 
             // SSE headers
             res.setHeader("Access-Control-Allow-Origin", "*");

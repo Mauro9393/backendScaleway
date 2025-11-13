@@ -569,7 +569,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             try {
                 // Normalizza input/instructions (il client ti manda input/instructions, NON messages)
                 let { input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
-                // Normalizza "input" nel formato Responses (parti testuali)
+
                 function toParts(msg) {
                     // già in parts?
                     if (Array.isArray(msg?.content)) return msg;
@@ -581,7 +581,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 }
 
                 if (!Array.isArray(input)) input = [];
-
                 input = input.map(toParts);
 
                 // Seed minimo se vuoto (es. welcome)
@@ -609,20 +608,17 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     responseType: "stream",
                     decompress: true,
                 });
+
                 let sseBuffer = ""; // accumula chunk parziali
 
                 axiosResp.data.on("data", (chunk) => {
                     sseBuffer += chunk.toString("utf8");
 
-                    // Gli eventi SSE sono separati da una riga vuota \n\n
-                    // (alcuni proxy possono normalizzare a \r?\n)
                     let idx;
                     while ((idx = sseBuffer.indexOf("\n\n")) !== -1) {
                         const rawEvent = sseBuffer.slice(0, idx);
                         sseBuffer = sseBuffer.slice(idx + 2); // salta \n\n
 
-                        // Ogni evento può avere più linee "field: value"
-                        // Ci interessa "data:"; "event:" è opzionale.
                         const lines = rawEvent.split(/\r?\n/);
                         let eventName = null;
                         let dataLine = "";
@@ -630,11 +626,9 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                         for (const line of lines) {
                             if (line.startsWith("event:")) eventName = line.slice(6).trim();
                             else if (line.startsWith("data:")) {
-                                // Attenzione: ci possono essere più data: per evento → concatenale con \n
                                 const payload = line.slice(5).trimStart();
                                 dataLine = dataLine ? dataLine + "\n" + payload : payload;
                             }
-                            // le altre linee (id:, retry:, commenti) si possono ignorare
                         }
 
                         if (!dataLine) continue;
@@ -645,7 +639,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
                         let evt;
                         try { evt = JSON.parse(dataLine); } catch {
-                            // se non è JSON lasciamo perdere questo evento
                             continue;
                         }
 
@@ -654,7 +647,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                             case "response.delta":
                             case "message.delta": {
                                 const deltaText =
-                                    evt.delta?.output_text?.content?.[0]?.text // alcuni SDK annidano così
+                                    evt.delta?.output_text?.content?.[0]?.text
                                     || evt.delta
                                     || evt.output_text?.delta
                                     || evt.text?.delta
@@ -684,8 +677,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                             }
 
                             default:
-                                // opzionale: log per debug
-                                // console.log("Azure evt:", eventName || evt.type);
                                 break;
                         }
                     }
@@ -704,23 +695,55 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     } catch { }
                 });
 
-                // IMPORTANTE: fermati qui. Evita che il catch esterno risponda di nuovo.
+                // IMPORTANTE: fermati qui.
                 return;
 
             } catch (err) {
-                // Se sei qui, probabilmente NON hai ancora scritto nulla.
-                // Serializza soltanto informazioni "safe".
                 const status = err?.response?.status || 500;
                 const headers = err?.response?.headers || {};
-                const requestId = headers["x-request-id"] || headers["x-ms-request-id"] || headers["apim-request-id"] || "";
+                const requestId =
+                    headers["x-request-id"] ||
+                    headers["x-ms-request-id"] ||
+                    headers["apim-request-id"] ||
+                    "";
                 let body = err?.response?.data;
 
-                if (Buffer.isBuffer(body)) { try { body = body.toString("utf8"); } catch { body = "<buffer>"; } }
-                if (typeof body === "object") { try { body = JSON.stringify(body); } catch { body = "<unserializable>"; } }
+                if (Buffer.isBuffer(body)) {
+                    try { body = body.toString("utf8"); } catch { body = "<buffer>"; }
+                }
+                if (typeof body === "object") {
+                    try { body = JSON.stringify(body); } catch { body = "<unserializable>"; }
+                }
 
-                // Se gli header sono già partiti (improbabile in questo path), non rispondere.
-                if (res.headersSent) return;
+                console.error("❌ azureOpenaiResponse ERROR", {
+                    status,
+                    requestId,
+                    body
+                });
 
+                // ⚠️ Se abbiamo già mandato gli header SSE (res.flushHeaders()),
+                // mandiamo almeno un evento di errore e chiudiamo lo stream.
+                if (res.headersSent) {
+                    try {
+                        res.write(
+                            "data: " +
+                            JSON.stringify({
+                                error: true,
+                                message: "azureOpenai error",
+                                status,
+                                requestId,
+                                details: body || null
+                            }) +
+                            "\n\n"
+                        );
+                        res.write("data: [DONE]\n\n");
+                        res.end();
+                    } catch { }
+                    return;
+                }
+
+                // Se per qualche motivo non avevamo ancora mandato gli header,
+                // rispondiamo in JSON "classico".
                 return res.status(status).json({
                     ok: false,
                     message: "azureOpenai error",
@@ -730,8 +753,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 });
             }
         }
-
-
 
         else if (service === "azureOpenaiNotStream") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;

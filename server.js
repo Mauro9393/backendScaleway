@@ -555,7 +555,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
         if (service === "azureOpenaiResponse") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;
-            const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
+            const defaultDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_SIMULATEUR;
             const apiVersion = process.env.AZURE_RESPONSE_OPENAI_API_VERSION || "2024-08-01-preview";
 
             // SSE headers
@@ -568,10 +568,9 @@ app.post("/api/:service", upload.none(), async (req, res) => {
 
             try {
                 // Normalizza input/instructions (il client ti manda input/instructions, NON messages)
-                let { input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
+                let { model, input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
 
                 function toParts(msg) {
-                    // già in parts?
                     if (Array.isArray(msg?.content)) return msg;
                     const text = (typeof msg?.content === "string" ? msg.content : "");
                     return {
@@ -583,7 +582,6 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 if (!Array.isArray(input)) input = [];
                 input = input.map(toParts);
 
-                // Seed minimo se vuoto (es. welcome)
                 if (input.length === 0) {
                     input = [{ role: "user", content: [{ type: "input_text", text: "Bonjour" }] }];
                 }
@@ -591,8 +589,12 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 const effectiveMaxOutputTokens = (max_output_tokens ?? max_tokens);
 
                 // Chiamiamo la Responses API in streaming
-                const url = `${endpoint}/openai/deployments/${deployment}/responses?api-version=${apiVersion}`;
+                const url = `${endpoint.replace(/\/$/, "")}/openai/v1/responses`;
+
+                const effectiveModel = model || defaultDeployment;
+
                 const payload = {
+                    model: effectiveModel,
                     input,
                     ...(instructions ? { instructions } : {}),
                     stream: true,
@@ -600,8 +602,11 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                     ...(top_p !== undefined ? { top_p } : {}),
                     ...(frequency_penalty !== undefined ? { frequency_penalty } : {}),
                     ...(presence_penalty !== undefined ? { presence_penalty } : {}),
-                    ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {}),
+                    ...(effectiveMaxOutputTokens !== undefined ? { max_output_tokens: effectiveMaxOutputTokens } : {})
                 };
+
+                console.log("🔹 Azure URL:", url);
+                console.log("🔹 Azure model:", effectiveModel);
 
                 const axiosResp = await axiosInstance.post(url, payload, {
                     headers: { "api-key": apiKey, "Content-Type": "application/json" },

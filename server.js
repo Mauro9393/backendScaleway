@@ -551,7 +551,7 @@ app.post("/api/:service", upload.none(), async (req, res) => {
             }
         }*/
 
-        // Azure OpenAI Response (Simulator)
+        // Azure OpenAI Response (Simulator) fix
         if (service === "azureOpenaiResponse") {
             const apiKey = process.env.AZURE_OPENAI_KEY_SIMULATEUR;
             const endpoint = process.env.AZURE_OPENAI_ENDPOINT_SIMULATEUR;

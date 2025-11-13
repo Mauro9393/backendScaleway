@@ -571,19 +571,55 @@ app.post("/api/:service", upload.none(), async (req, res) => {
                 let { model, input, instructions, temperature, top_p, frequency_penalty, presence_penalty, max_tokens, max_output_tokens } = req.body || {};
 
                 function toParts(msg) {
-                    if (Array.isArray(msg?.content)) return msg;
-                    const text = (typeof msg?.content === "string" ? msg.content : "");
+                    if (!msg) {
+                        return {
+                            type: "message",
+                            role: "user",
+                            content: [
+                                { type: "input_text", text: "" }
+                            ]
+                        };
+                    }
+
+                    const role = msg.role || "user";
+
+                    // Se il client ha già mandato content come array (parts),
+                    // aggiungiamo SEMPRE type: "message"
+                    if (Array.isArray(msg.content)) {
+                        return {
+                            type: msg.type || "message",
+                            role,
+                            content: msg.content.map((part) => {
+                                if (typeof part === "string") {
+                                    return { type: "input_text", text: part };
+                                }
+                                if (part && part.type) return part;
+                                return { type: "input_text", text: String(part.text ?? "") };
+                            })
+                        };
+                    }
+
+                    // Caso semplice: content è stringa
+                    const text = (typeof msg.content === "string" ? msg.content : "");
                     return {
-                        role: msg?.role || "user",
-                        content: [{ type: "input_text", text }]
+                        type: "message",
+                        role,
+                        content: [
+                            { type: "input_text", text }
+                        ]
                     };
                 }
 
                 if (!Array.isArray(input)) input = [];
                 input = input.map(toParts);
 
+                // Seed minimo se vuoto (es. welcome)
                 if (input.length === 0) {
-                    input = [{ role: "user", content: [{ type: "input_text", text: "Bonjour" }] }];
+                    input = [{
+                        type: "message",
+                        role: "user",
+                        content: [{ type: "input_text", text: "Bonjour" }]
+                    }];
                 }
 
                 const effectiveMaxOutputTokens = (max_output_tokens ?? max_tokens);

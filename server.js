@@ -2270,7 +2270,7 @@ function openElevenLabsWs({
         const initMsg = {
             text: " ",
             voice_settings: voiceSettings || undefined,
-            generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
+            generation_config: { chunk_length_schedule: [60, 100, 140, 180] /*[120, 160, 250, 290]*/ }
         };
         try { elWs.send(JSON.stringify(initMsg)); } catch { }
 
